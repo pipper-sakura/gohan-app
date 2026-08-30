@@ -15,9 +15,12 @@ const SHEETS = {
     '日持ち冷蔵', '日持ちパーシャル', '日持ち冷凍',
     '共通グループ', '参考URL', '手順メモ',
   ],
+  // 「期限」は古い列。食べる予定日が入っている行があるため、安全の判断には使わない。
+  // 新しくは「食べる予定日」と「保存期限」を分けて持つ。
   stock: [
     'id', '名称', '種別', '作った日', '残数', '保存場所', '期限',
-    '用途', 'plan_id', '調理要否', '取り置き先', '更新日時',
+    '用途', 'plan_id', '調理要否', '取り置き先', 'メモ',
+    '食べる予定日', '保存期限', '調理ロット', '更新日時',
   ],
   plan: ['id', '日付', '食事区分', 'member_id', 'menu_id', '状態', '更新日時'],
   tasks: ['id', '内容', 'menu_id', '予定日', '所要時間', '担当', '状態'],
@@ -34,7 +37,7 @@ const SHEETS = {
   ],
   baby_legend: ['記号', '意味'],
   baby_ng: ['区分', '食材'],
-  shopping: ['id', '食材名', '昼で使うメニュー', '夜で使うメニュー', '調達先', '買った'],
+  shopping: ['id', '食材名', '昼で使うメニュー', '夜で使うメニュー', '調達先', '買った', '手で追加'],
   orders: ['id', '注文日', '到着予定日', '商品名', '数量', '金額', '状態'],
   expenses: ['id', '日付', '店', '金額', '支払者', 'メモ'],
   feedback: ['id', '日付', 'menu_id', '時間帯', '判定', 'NG理由'],
@@ -171,6 +174,10 @@ function initSheets() {
     ['コープ締切', '金曜19時'],
     ['コープ到着', '木曜（注文の2週間後）'],
     ['週の開始曜日', '土'],
+    ['ごはん警告パック数', 2],
+    ['一度に炊くパック数（大）', 4],
+    ['一度に炊くパック数（小）', 4],
+    ['ごはんの日持ち', 3],
   ]);
 
   // GASが自動で作る空の「シート1」が残っていたら消す
@@ -184,9 +191,76 @@ function initSheets() {
   );
 }
 
+/**
+ * シートの列を、いまの定義に合わせて足す。
+ *
+ * initSheets は既にあるシートを飛ばすので、あとから列を増やしても反映されない。
+ * この関数は、足りない列を右端に追加するだけで、既存の行と手入力には触らない。
+ * 何度実行しても同じ結果になる。
+ */
+function migrateColumns() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const added = [];
+
+  Object.keys(SHEETS).forEach(function (name) {
+    const sh = ss.getSheetByName(name);
+    if (!sh) return;
+    const want = SHEETS[name];
+    const have = sh.getLastColumn()
+      ? sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String)
+      : [];
+
+    const missing = want.filter(function (h) { return have.indexOf(String(h)) < 0; });
+    if (!missing.length) return;
+
+    sh.getRange(1, have.length + 1, 1, missing.length).setValues([missing]);
+    sh.getRange(1, 1, 1, have.length + missing.length).setFontWeight('bold');
+    added.push(name + '：' + missing.join('、'));
+  });
+
+  SpreadsheetApp.getUi().alert(
+    added.length
+      ? '足した列\n\n' + added.join('\n') + '\n\n既存のデータは触っていません。'
+      : '足りない列はありません。'
+  );
+}
+
 /** データが1行も無いときだけ初期データを入れる */
 function seedIfEmpty_(name, rows) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
   if (!sh || sh.getLastRow() > 1 || !rows.length) return;
   sh.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+
+/**
+ * 日持ちパーシャルの日数をまとめて下げる。
+ *
+ * 4日だと、週末に作った平日昼のうち木曜分までパーシャルになる。
+ * 3日にすると、月・火・水がパーシャル、木・金が冷凍になり、安心寄りになる。
+ *
+ * GASエディタで shortenPartialDays を1回実行する。
+ * すでに3日以下のものは触らない。
+ */
+function shortenPartialDays() {
+  const TO = 3;
+  const rows = readSheet_('menus');
+  const changed = [];
+
+  rows.forEach(function (m) {
+    const now = Number(m['日持ちパーシャル']) || 0;
+    if (now > TO) {
+      m['日持ちパーシャル'] = TO;
+      changed.push(m['メニュー名'] + '（' + now + '→' + TO + '）');
+    }
+  });
+
+  if (changed.length) writeSheetRows_('menus', rows);
+
+  SpreadsheetApp.getUi().alert(
+    changed.length
+      ? changed.length + '件を' + TO + '日に下げました。\n\n' + changed.slice(0, 15).join('\n')
+        + (changed.length > 15 ? '\n…ほか' + (changed.length - 15) + '件' : '')
+      : 'すでにすべて' + TO + '日以下です。'
+  );
 }

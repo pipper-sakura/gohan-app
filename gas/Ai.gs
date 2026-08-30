@@ -189,17 +189,34 @@ function h_planWeekAI(p) {
     return s['名称'] + (s['保存期限'] ? '(' + s['保存期限'] + 'まで)' : '');
   }).join('、') || 'なし';
 
-  /* 最近作ったもの（連続を避けるため） */
+  /* 最近作ったもの（かぶりを避けるため）
+   *
+   * 前は直近60件を日付順に渡していたが、夜は1日3品あるので
+   * 60件では2週間ぶんしか届いておらず、「4週間分」という見出しが嘘になっていた。
+   * 主菜ごとに「最後に作った日」だけを渡すほうが、短くて漏れがない。 */
   const menuName = {};
   menus.forEach(function (m) { menuName[m['id']] = m['メニュー名']; });
-  const since = addDays_(String(r.from).slice(0, 10), -28);
-  const recent = plans.filter(function (x) {
+  const isMain = {};
+  menus.forEach(function (m) { if (m['区分'] === '主菜') isMain[m['id']] = true; });
+
+  const start = String(r.from).slice(0, 10);
+  const minGap = minGapDays_();
+  const lastMade = {};
+  plans.forEach(function (x) {
     const d = String(x['日付']).slice(0, 10);
-    return d >= since && d < String(r.from).slice(0, 10);
-  }).sort(function (a, b) { return String(b['日付']).localeCompare(String(a['日付'])); })
-    .slice(0, 60)
-    .map(function (x) { return String(x['日付']).slice(5) + ' ' + x['食事区分'] + ' ' + (menuName[x['menu_id']] || ''); })
-    .join(' / ') || 'なし';
+    if (d >= start || !isMain[x['menu_id']]) return;
+    if (!lastMade[x['menu_id']] || d > lastMade[x['menu_id']]) lastMade[x['menu_id']] = d;
+  });
+  const recent = Object.keys(lastMade).sort(function (a, b) {
+    return lastMade[b].localeCompare(lastMade[a]);
+  }).map(function (id) {
+    return menuName[id] + '：' + lastMade[id] + '（' + daysBetween_(lastMade[id], start) + '日前）';
+  }).join(' / ') || 'なし';
+
+  /* まだ一度も作っていない主菜。ここから選ぶとかぶらない */
+  const neverMade = menus.filter(function (m) {
+    return m['区分'] === '主菜' && !lastMade[m['id']];
+  }).map(function (m) { return m['メニュー名']; }).join('、') || 'なし';
 
   /* 食費 */
   const month = today.slice(0, 7);
@@ -243,7 +260,9 @@ function h_planWeekAI(p) {
     '・夜は仕事のあとに30〜40分で作れるもの。',
     '・木曜は隔週で鍋。鍋にした週は金曜も同じ鍋（2日目）にする。',
     '・同じ日の昼と夜で、同じ食材が重ならないようにする。',
-    '・同じ主菜が短い間隔で繰り返さないようにする。',
+    '・同じ主菜は ' + minGap + ' 日以上あける。これは必ず守ること。',
+    '　この期間の中でも、同じ主菜を二度出さない。',
+    '　まだ作っていない主菜があるなら、そちらを先に使う。',
     '・主菜・副菜・汁物で、肉/魚/豆と野菜がかたよらないようにする。',
     '',
     '【家族の苦手（×は使わない。△は控えめに）】',
@@ -258,8 +277,11 @@ function h_planWeekAI(p) {
     '【前にNGにした組み合わせ（出さない）】',
     ngText,
     '',
-    '【この4週間で作ったもの（続けて出さない）】',
+    '【主菜を最後に作った日（' + minGap + '日たっていないものは出さない）】',
     recent,
+    '',
+    '【まだ一度も作っていない主菜（優先して使う）】',
+    neverMade,
     '',
     '【選べるメニュー】id | 名前 | 区分 | 時間帯 | 器具 | 解凍 | 分 | 材料',
     list,
@@ -292,9 +314,13 @@ function h_planWeekAI(p) {
 
   replacePlanRange_(r.from, r.to, rows);
 
+  /* お願いしただけでは守られないことがあるので、出てきた結果を数えて直す */
+  const fixed = h_fixRepeats({ from: r.from, to: r.to });
+
   return {
     入れた件数: rows.length,
     はじいた件数: dropped.length,
+    かぶりを直した件数: fixed['直した件数'],
     考えたこと: parsed['考えたこと'] || '',
     使ったトークン: out.usage,
   };

@@ -7,7 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
-const APP_VERSION = '2026-08-30-25';
+const APP_VERSION = '2026-08-30-27';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -935,6 +935,7 @@ function renderPlan() {
     + '<button class="btn primary" id="suggest-month">AIに1ヶ月分を組んでもらう</button>'
     + '</div>'
     + '<div class="btn-row">'
+    + '<button class="btn small" id="check-repeats">かぶりを調べる</button>'
     + '<button class="btn small" id="suggest-rule">ルールで組む（AIを使わない）</button>'
     + '<button class="btn small" id="clear-month">この月を空にする</button>'
     + '</div>';
@@ -1357,6 +1358,41 @@ function bindPlanEvents(weeks) {
     await reload();
     toast(ok + '週ぶんを入れました' + (ng ? '（' + ng + '週は失敗）' : ''));
     if (notes.length) alert('AIが考えたこと\n\n' + notes.join('\n\n'));
+  });
+
+  /**
+   * 同じ主菜が近い間隔で並んでいないか調べ、その場で直せるようにする。
+   * AIに「続けて出さないで」とお願いするだけでは守られないため、
+   * 出てきた結果を数えて確かめる。
+   */
+  document.getElementById('check-repeats').addEventListener('click', async function () {
+    try {
+      toast('調べています…');
+      const r = await api('checkRepeats', { from: from, to: to });
+      const list = r['かぶり'] || [];
+      if (!list.length) {
+        alert('同じ主菜が' + r['あける日数'] + '日以内に並んでいるところはありませんでした。');
+        return;
+      }
+      const text = list.map(function (v) {
+        return '・' + shortDate(v['日付']) + ' ' + v['食事区分'] + '　' + v['名前']
+          + '（' + shortDate(v['前回']) + 'から' + v['間隔'] + '日）';
+      }).join('\n');
+      if (!confirm('同じ主菜が' + r['あける日数'] + '日たたずに出てくるところが '
+        + list.length + '件 ありました。\n\n' + text
+        + '\n\n後のほうを、しばらく作っていない別の主菜に差し替えますか？')) return;
+
+      toast('直しています…');
+      const f = await api('fixRepeats', { from: from, to: to });
+      await reload();
+      const detail = (f['内訳'] || []).map(function (c) {
+        return '・' + shortDate(c['日付']) + ' ' + c['食事区分'] + '　'
+          + c['もとの'] + ' → ' + (c['あたらしい'] || c['理由']);
+      }).join('\n');
+      alert(f['直した件数'] + '件を差し替えました'
+        + (f['直せなかった件数'] ? '（' + f['直せなかった件数'] + '件は代わりが無く、そのままです）' : '')
+        + '\n\n' + detail);
+    } catch (err) { toast('調べられませんでした：' + err.message); }
   });
 
   document.getElementById('suggest-rule').addEventListener('click', async function () {
@@ -2825,6 +2861,10 @@ function renderSettings() {
     + '<div class="btn-row"><button class="btn primary" id="s-save">保存してつなぐ</button>'
       + '<button class="btn" id="s-test">つなぎ先をためす</button></div>'
     + '<div id="s-testout"></div>'
+    + '<div class="btn-row"><button class="btn" id="s-refresh">アプリを最新にする</button></div>'
+    + '<p class="hint">画面を直したのに変わらないときに押してください。'
+      + '端末にためこんだ古い画面を消して、読み込み直します。'
+      + '入れた設定（URL・合言葉・自分が誰か）は消えません。</p>'
     + '<div class="note">この2つはこの端末の中にだけ保存されます。アプリのコードにも、GitHubにも入りません。'
     + '<br>いま動いている画面のバージョン： <b>' + APP_VERSION + '</b>'
     + (state.loadedAt
@@ -2924,6 +2964,28 @@ function renderSettings() {
     reload();
     toast('保存しました');
   });
+  /**
+   * 端末にためこんだ古い画面を捨てて読み込み直す。
+   * iPhoneは index.html を握ったままにすることがあり、
+   * app.js だけ新しくなって見た目が変わらない、という状態になるため。
+   */
+  document.getElementById('s-refresh').addEventListener('click', async function () {
+    if (!confirm('古い画面を捨てて読み込み直します。\n'
+      + 'URL・合言葉・自分が誰かの設定は消えません。よろしいですか？')) return;
+    toast('読み込み直しています…');
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) await r.unregister();
+      }
+      if (window.caches) {
+        const keys = await caches.keys();
+        for (const k of keys) if (k.indexOf('gohan-') === 0) await caches.delete(k);
+      }
+    } catch (e) { /* 消せなくても読み込み直しは試す */ }
+    location.replace(location.pathname + '?r=' + Date.now());
+  });
+
   document.getElementById('s-test').addEventListener('click', async function () {
     const box = document.getElementById('s-testout');
     box.innerHTML = '<div class="note">ためしています…</div>';

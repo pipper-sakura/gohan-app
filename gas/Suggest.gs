@@ -275,3 +275,225 @@ function seedAugustTail() {
     + '9/1以降は seedSeptember を実行してください。'
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* 主菜のかぶりを検査して直す                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 同じ主菜をあける日数の既定値。
+ * config シートに「かぶり最小間隔」があればそちらを使う。
+ *
+ * なぜ機械で見るのか：
+ * 「同じものを続けて出さないで」とAIにお願いしても、守られないことがある。
+ * 実際、9月の献立では6日おきに同じ主菜が並んでいた。
+ * お願いではなく、出てきた結果を数えて直す。
+ */
+const DEFAULT_MIN_GAP_DAYS = 10;
+
+function minGapDays_() {
+  let n = 0;
+  readSheet_('config').forEach(function (c) {
+    if (c['キー'] === 'かぶり最小間隔') n = Number(c['値']) || 0;
+  });
+  return n > 0 ? n : DEFAULT_MIN_GAP_DAYS;
+}
+
+/** 朝→昼→夜の順に並べるための番号 */
+function slotOrder_(slot) {
+  return slot === '朝' ? 0 : slot === '昼' ? 1 : 2;
+}
+
+/**
+ * 主菜のかぶりを探す。
+ *
+ * from より前も minGap 日ぶんさかのぼって見る。
+ * 月をまたいだところのかぶりを見落とさないため。
+ *
+ * @return {Array} [{日付, 食事区分, menu_id, 名前, 前回, 間隔}]
+ */
+function findRepeats_(from, to, minGap, plans, menuById) {
+  const since = addDays_(from, -minGap);
+  const rows = plans.filter(function (p) {
+    const d = String(p['日付']).slice(0, 10);
+    if (d < since || d > to) return false;
+    const m = menuById[p['menu_id']];
+    return !!m && m['区分'] === '主菜';
+  }).sort(function (a, b) {
+    const da = String(a['日付']).slice(0, 10);
+    const db = String(b['日付']).slice(0, 10);
+    if (da !== db) return da < db ? -1 : 1;
+    return slotOrder_(a['食事区分']) - slotOrder_(b['食事区分']);
+  });
+
+  const last = {};
+  const found = [];
+  rows.forEach(function (p) {
+    const d = String(p['日付']).slice(0, 10);
+    const id = p['menu_id'];
+    const prev = last[id];
+    if (prev) {
+      const gap = daysBetween_(prev, d);
+      // 鍋の2日目のように、わざと続けて食べるものは 1日あきなので除く
+      if (gap >= 2 && gap < minGap && d >= from) {
+        found.push({
+          日付: d,
+          食事区分: p['食事区分'],
+          menu_id: id,
+          名前: menuById[id]['メニュー名'],
+          前回: prev,
+          間隔: gap,
+        });
+      }
+    }
+    last[id] = d;
+  });
+  return found;
+}
+
+/**
+ * その枠に置ける主菜かどうか。
+ *
+ * 昼は週末にオーブンでまとめて作って冷凍するので、
+ * 「オーブンで焼けて、解凍がいらない」ものしか置けない。
+ */
+function fitsSlot_(m, slot) {
+  const band = String(m['時間帯'] || '両方');
+  if (band !== '両方' && band !== '' && band.indexOf(slot) < 0) return false;
+  if (slot === '昼') {
+    if (String(m['調理器具'] || '').indexOf('オーブン') < 0) return false;
+    if (String(m['解凍要否'] || '').indexOf('要') === 0) return false;
+  }
+  return true;
+}
+
+/**
+ * かぶりを直す。
+ *
+ * 後に出てくるほうを、しばらく作っていない別の主菜に差し替える。
+ * 差し替え先は、その枠に置けて・苦手食材(×)を含まず・
+ * 前後 minGap 日に出てこないもののうち、いちばん長く作っていないもの。
+ *
+ * payload: {from, to, dryRun}
+ */
+function h_fixRepeats(p) {
+  const r = checkRange_(p.from, p.to);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const minGap = minGapDays_();
+    const menus = readSheet_('menus');
+    const menuById = {};
+    menus.forEach(function (m) { menuById[m['id']] = m; });
+
+    /* 家族の誰かが × にしている食材を含む主菜は、差し替え先に選ばない */
+    const banned = {};
+    readSheet_('prefs').forEach(function (x) {
+      if (x['評価'] === '×') banned[String(x['食材名']).trim()] = true;
+    });
+    function hasBanned_(m) {
+      return splitList_(m['材料']).some(function (f) { return banned[String(f).trim()]; });
+    }
+
+    const plans = readSheet_('plan');
+    const found = findRepeats_(r.from, r.to, minGap, plans, menuById);
+
+    if (p.dryRun) {
+      return { あける日数: minGap, かぶり: found, 直した件数: 0 };
+    }
+    if (!found.length) {
+      return { あける日数: minGap, かぶり: [], 直した件数: 0, メッセージ: 'かぶりはありませんでした' };
+    }
+
+    /* 作業用に、menu_id を書き換えられる形で持つ */
+    const byKey = {};
+    plans.forEach(function (x) {
+      byKey[x['id']] = x;
+    });
+
+    /* 主菜がいつ出てくるかの一覧（差し替えのたびに更新する） */
+    function datesOf_(menuId) {
+      const out = [];
+      plans.forEach(function (x) {
+        if (x['menu_id'] === menuId && menuById[x['menu_id']]) out.push(String(x['日付']).slice(0, 10));
+      });
+      return out;
+    }
+    /** その日に menuId を置いても、前後 minGap 日にかぶらないか */
+    function freeAt_(menuId, date, exceptRowId) {
+      return !plans.some(function (x) {
+        if (x['id'] === exceptRowId) return false;
+        if (x['menu_id'] !== menuId) return false;
+        const d = String(x['日付']).slice(0, 10);
+        return Math.abs(daysBetween_(d, date)) < minGap;
+      });
+    }
+    /** 最後に作った日（無ければ空） */
+    function lastUsed_(menuId) {
+      const ds = datesOf_(menuId);
+      return ds.length ? ds.sort().pop() : '';
+    }
+
+    const changed = [];
+    found.forEach(function (v) {
+      /* 直す対象の行を1つ選ぶ（同じ日・同じ区分・同じmenu_id） */
+      const row = plans.filter(function (x) {
+        return String(x['日付']).slice(0, 10) === v['日付']
+          && x['食事区分'] === v['食事区分']
+          && x['menu_id'] === v['menu_id'];
+      })[0];
+      if (!row) return;
+
+      const cands = menus.filter(function (m) {
+        if (m['区分'] !== '主菜') return false;
+        if (m['id'] === v['menu_id']) return false;
+        if (!fitsSlot_(m, v['食事区分'])) return false;
+        if (hasBanned_(m)) return false;
+        return freeAt_(m['id'], v['日付'], row['id']);
+      }).sort(function (a, b) {
+        /* いちばん長く作っていないものを先に。一度も作っていないものが最優先 */
+        const la = lastUsed_(a['id']) || '0000-00-00';
+        const lb = lastUsed_(b['id']) || '0000-00-00';
+        return la < lb ? -1 : la > lb ? 1 : 0;
+      });
+
+      if (!cands.length) {
+        changed.push({
+          日付: v['日付'], 食事区分: v['食事区分'],
+          もとの: v['名前'], あたらしい: '', 理由: '置きかえられるメニューがありません',
+        });
+        return;
+      }
+
+      const pick = cands[0];
+      changed.push({
+        日付: v['日付'], 食事区分: v['食事区分'],
+        もとの: v['名前'] + '（' + v['前回'] + 'から' + v['間隔'] + '日）',
+        あたらしい: pick['メニュー名'], 理由: '',
+      });
+      row['menu_id'] = pick['id'];   // plans の中身を直接書き換える
+    });
+
+    /* 期間内の行だけを、id を変えずに書き戻す */
+    const inRangeRows = plans.filter(function (x) { return inRange_(x['日付'], r.from, r.to); });
+    replacePlanRange_(r.from, r.to, inRangeRows);
+
+    /* 献立が変わったので、在庫の「予定あり／どうぞ」を付け直す */
+    reserveStockForPlan(r.from, r.to);
+
+    return {
+      あける日数: minGap,
+      かぶり: found,
+      直した件数: changed.filter(function (c) { return c['あたらしい']; }).length,
+      直せなかった件数: changed.filter(function (c) { return !c['あたらしい']; }).length,
+      内訳: changed,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** payload: {from, to} 直さずに見るだけ */
+function h_checkRepeats(p) {
+  return h_fixRepeats({ from: p.from, to: p.to, dryRun: true });
+}
