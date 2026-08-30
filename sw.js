@@ -1,5 +1,5 @@
 /* 画面のファイルだけキャッシュする。データはキャッシュしない（app.js側で前回分を保持している） */
-const CACHE = 'gohan-v1';
+const CACHE = 'gohan-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.json',
                'icons/icon-192.png', 'icons/icon-512.png'];
 
@@ -20,8 +20,10 @@ self.addEventListener('fetch', (e) => {
   // GASへのPOSTなど、同じオリジン以外とGET以外は素通し
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
 
+  // ブラウザのキャッシュを見に行くと、直したはずの画面が古いままになる。
+  // 毎回サーバーに確認して、つながらないときだけキャッシュを使う。
   e.respondWith(
-    fetch(req)
+    fetch(new Request(req.url, { cache: 'no-cache' }))
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(req, copy));
