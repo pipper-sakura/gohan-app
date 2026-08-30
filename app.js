@@ -7,7 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
-const APP_VERSION = '2026-08-30-19';
+const APP_VERSION = '2026-08-30-21';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -60,13 +60,29 @@ function go(tab) {
  * 送信先は設定画面で入れた自分のGASのURLだけ。
  */
 async function api(action, payload) {
-  if (!cfg.url || !cfg.secret) throw new Error('URLと合言葉が未設定です');
-  const res = await fetch(cfg.url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ secret: cfg.secret, action: action, payload: payload || {} }),
-  });
-  const out = await res.json();
+  if (!cfg.url || !cfg.secret) throw new Error('URLと合言葉が入っていません（設定タブ）');
+
+  let res;
+  try {
+    res = await fetch(cfg.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ secret: cfg.secret, action: action, payload: payload || {} }),
+    });
+  } catch (e) {
+    throw new Error('つながりません。電波か、設定タブのURLを確かめてください');
+  }
+
+  const text = await res.text();
+  let out;
+  try {
+    out = JSON.parse(text);
+  } catch (e) {
+    // GASがエラーページ（HTML）を返している。中身をそのまま見せないと原因が分からない。
+    const plain = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    throw new Error('GASが返事を返せていません。ファイルの貼り忘れか、デプロイのし直し忘れかもしれません。'
+      + '／' + plain.slice(0, 200));
+  }
   if (!out.ok) throw new Error(out.error || '不明なエラー');
   return out.data;
 }
@@ -74,16 +90,25 @@ async function api(action, payload) {
 async function reload() {
   try {
     state.data = await api('load', {});
+    state.lastError = null;
     cacheData(state.data);
     render();
   } catch (err) {
+    // 何が起きたのかを隠さない。「つながりません」だけだと原因が追えない。
+    state.lastError = err.message;
     const cached = readCache();
     if (cached) {
       state.data = cached;
       render();
-      toast('つながらないので前回の内容を表示しています');
     } else {
-      view('<div class="alert">読み込めませんでした：' + esc(err.message) + '</div>');
+      // 前回分が無いときは、帯ではなく本文に出す（同じ内容を二度出さない）
+      const msg = state.lastError;
+      state.lastError = null;
+      view('<div class="alert">読み込めませんでした<br><br>' + esc(msg)
+        + '<div class="btn-row"><button class="btn small" id="err-retry2">もう一度つなぐ</button></div></div>');
+      const r2 = document.getElementById('err-retry2');
+      if (r2) r2.addEventListener('click', function () { toast('つないでいます…'); reload(); });
+      state.lastError = msg;
     }
   }
 }
@@ -114,7 +139,16 @@ function render() {
   if (state.tab === 'baby') return renderBaby();
 }
 
-function view(html) { document.getElementById('view').innerHTML = html; }
+function view(html) {
+  const warn = state.lastError
+    ? '<div class="alert">いまの内容は前回読み込んだものです。保存もできません。<br><br>'
+      + '<b>原因</b>：' + esc(state.lastError)
+      + '<div class="btn-row"><button class="btn small" id="err-retry">もう一度つなぐ</button></div></div>'
+    : '';
+  document.getElementById('view').innerHTML = warn + html;
+  const r = document.getElementById('err-retry');
+  if (r) r.addEventListener('click', function () { toast('つないでいます…'); reload(); });
+}
 
 /* ================================================================== */
 /* 今日                                                                */
@@ -2426,7 +2460,9 @@ function renderSettings() {
   let h = '<h2 class="section">つなぎ先</h2>'
     + '<label class="field">GASのウェブアプリURL<input type="url" id="s-url" value="' + esc(cfg.url || '') + '" placeholder="https://script.google.com/macros/s/.../exec"></label>'
     + '<label class="field">家族の合言葉<input type="password" id="s-secret" value="' + esc(cfg.secret || '') + '"></label>'
-    + '<div class="btn-row"><button class="btn primary" id="s-save">保存してつなぐ</button></div>'
+    + '<div class="btn-row"><button class="btn primary" id="s-save">保存してつなぐ</button>'
+      + '<button class="btn" id="s-test">つなぎ先をためす</button></div>'
+    + '<div id="s-testout"></div>'
     + '<div class="note">この2つはこの端末の中にだけ保存されます。アプリのコードにも、GitHubにも入りません。'
     + '<br>いま動いている画面のバージョン： <b>' + APP_VERSION + '</b></div>';
 
@@ -2521,6 +2557,49 @@ function renderSettings() {
     reload();
     toast('保存しました');
   });
+  document.getElementById('s-test').addEventListener('click', async function () {
+    const box = document.getElementById('s-testout');
+    box.innerHTML = '<div class="note">ためしています…</div>';
+    const url = document.getElementById('s-url').value.trim();
+    const sec = document.getElementById('s-secret').value;
+    if (!url) { box.innerHTML = '<div class="alert">URLを入れてください</div>'; return; }
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ secret: sec, action: 'ping', payload: {} }),
+      });
+      const text = await res.text();
+      let j = null;
+      try { j = JSON.parse(text); } catch (e) {}
+
+      if (!j) {
+        const plain = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        box.innerHTML = '<div class="alert">GASがエラーを返しています。'
+          + 'ファイルの貼り忘れか、デプロイのし直し忘れかもしれません。<br><br>'
+          + esc(plain.slice(0, 300)) + '</div>';
+        return;
+      }
+      if (!j.ok) {
+        box.innerHTML = '<div class="alert">' + esc(j.error || '不明なエラー') + '</div>';
+        return;
+      }
+      const d = j.data || {};
+      const miss = d['足りない関数'] || [];
+      box.innerHTML = (miss.length
+          ? '<div class="alert">GASは動いていますが、次の処理が足りません。'
+            + 'そのファイルを貼り直して、新バージョンでデプロイしてください。<br><br>'
+            + esc(miss.join('、')) + '</div>'
+          : '<div class="alert calm">つながりました。処理はすべて揃っています。</div>')
+        + '<div class="note">シート ' + esc(String(d['シート数'] || '')) + '枚'
+        + '／権限 ' + esc(String(d['権限'] || ''))
+        + '／AIのキー ' + esc(String(d['APIキー'] || '')) + '</div>';
+    } catch (e) {
+      box.innerHTML = '<div class="alert">つながりません：' + esc(e.message)
+        + '<br><br>URLが正しいか、デプロイの「アクセスできるユーザー」が「全員」かを確かめてください。</div>';
+    }
+  });
+
   document.querySelectorAll('[data-me]').forEach(function (b) {
     b.addEventListener('click', function () { cfg.me = b.dataset.me; saveCfg(); paintMe(); render(); });
   });
