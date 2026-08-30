@@ -7,6 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
+const APP_VERSION = '2026-08-30-5';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -421,17 +422,23 @@ function renderPlan() {
   bindPlanEvents(weeks);
 }
 
-/* 1週間分の表 */
+/* 1週間分の表。列幅を決めておき、画面幅に収める */
 function weekTable(days) {
   const d = state.data;
-  let h = '<div class="week"><table class="grid"><thead><tr><th></th>';
+  const today = ymd(new Date());
+
+  let h = '<table class="grid">'
+    + '<colgroup><col class="c-date"><col class="c-asa"><col><col></colgroup>'
+    + '<thead><tr><th></th>';
   SLOTS.forEach(function (s) { h += '<th>' + s + '</th>'; });
   h += '</tr></thead><tbody>';
 
   days.forEach(function (day) {
     const dow = new Date(day + 'T00:00:00').getDay();
     const weekend = (dow === 0 || dow === 6);
-    h += '<tr><th>' + shortDate(day) + '(' + WEEK_LABEL[dow] + ')</th>';
+    h += '<tr' + (day === today ? ' class="today"' : '') + '>'
+      + '<th>' + shortDate(day) + '<br>(' + WEEK_LABEL[dow] + ')</th>';
+
     SLOTS.forEach(function (slot) {
       const rows = d.plan.filter(function (p) {
         return String(p['日付']).slice(0, 10) === day && p['食事区分'] === slot && p['状態'] !== '変更';
@@ -444,11 +451,12 @@ function weekTable(days) {
       const label = rows.length
         ? rows.map(function (p) { return esc(menuName(p['menu_id'])); }).join('<br>')
         : '＋';
-      h += '<td><button class="cell' + (rows.length ? '' : ' empty-cell') + '" data-cell="' + day + '|' + slot + '">' + label + '</button></td>';
+      h += '<td><button class="cell' + (rows.length ? '' : ' empty-cell') + '" data-cell="'
+        + day + '|' + slot + '">' + label + '</button></td>';
     });
     h += '</tr>';
   });
-  return h + '</tbody></table></div>';
+  return h + '</tbody></table>';
 }
 
 /* その週の平日昼5食を、オーブンでまとめて作るための一覧 */
@@ -567,9 +575,15 @@ function bindPlanEvents(weeks) {
 
 function pickMenu(day, slot) {
   const d = state.data;
-  const dow = new Date(day + 'T00:00:00+09:00').getDay();
+  const dow = new Date(day + 'T00:00:00').getDay();
+
+  // 昼は1食＝耐熱容器1つ＝1品なので差し替え。朝も1品。
+  // 夜は主菜・副菜・汁物を組み合わせるので追加。
+  const replaceMode = (slot !== '夜');
+
   const list = d.menus.filter(function (m) {
     if (slot === '昼' && m['時間帯'] === '夜') return false; // 夜だけのものは昼に出さない
+    if (slot === '朝' && m['時間帯'] === '昼') return false;
     return true;
   });
 
@@ -581,10 +595,17 @@ function pickMenu(day, slot) {
   if (existing.length) {
     h += '<p class="hint">いま入っているもの</p>';
     existing.forEach(function (p) {
-      h += '<button class="pick" data-del="' + p['id'] + '">' + esc(menuName(p['menu_id'])) + '<div class="meta">押すと外します</div></button>';
+      h += '<button class="pick" data-del="' + p['id'] + '">' + esc(menuName(p['menu_id']))
+        + '<div class="meta">押すと外します</div></button>';
     });
   }
-  h += '<p class="hint" style="margin-top:14px">追加する</p>';
+
+  h += '<p class="hint" style="margin-top:14px">'
+    + (replaceMode
+        ? (existing.length ? '押すと差し替えます' : '選んでください')
+        : '追加する')
+    + '</p>';
+
   list.forEach(function (m) {
     h += '<button class="pick" data-add="' + m['id'] + '">' + esc(m['メニュー名'])
       + '<div class="meta">' + esc([m['区分'], m['調理器具'], m['調理時間'] ? m['調理時間'] + '分' : ''].filter(Boolean).join('・')) + '</div></button>';
@@ -592,17 +613,23 @@ function pickMenu(day, slot) {
 
   openSheet(shortDate(day) + '(' + WEEK_LABEL[dow] + ') の' + slot, h);
 
-  document.querySelectorAll('[data-add]').forEach(function (b) {
-    b.addEventListener('click', async function () {
+  document.querySelectorAll('[data-add]').forEach(function (b2) {
+    b2.addEventListener('click', async function () {
       closeSheet();
-      await save('plan', [{ 日付: day, 食事区分: slot, member_id: '', menu_id: b.dataset.add, 状態: '予定' }]);
+      // 差し替えのときは、先に入っているものを外す
+      if (replaceMode && existing.length) {
+        await api('remove', { sheet: 'plan', ids: existing.map(function (p) { return p['id']; }) });
+      }
+      await save('plan', [{ 日付: day, 食事区分: slot, member_id: '', menu_id: b2.dataset.add, 状態: '予定' }]);
+      toast(replaceMode && existing.length ? '差し替えました' : '入れました');
     });
   });
-  document.querySelectorAll('[data-del]').forEach(function (b) {
-    b.addEventListener('click', async function () {
+  document.querySelectorAll('[data-del]').forEach(function (b2) {
+    b2.addEventListener('click', async function () {
       closeSheet();
-      await api('remove', { sheet: 'plan', ids: [b.dataset.del] });
+      await api('remove', { sheet: 'plan', ids: [b2.dataset.del] });
       await reload();
+      toast('外しました');
     });
   });
 }
@@ -633,13 +660,18 @@ async function cookLunches(lunches) {
 /* ================================================================== */
 
 function renderShopping() {
+  // 食費は家計の話なので、ライトユーザー（お義母さん）の画面には出さない
+  const canSeeMoney = (myMember() || {})['区分'] !== 'ライト';
+  if (!canSeeMoney && state.shopTab === 'money') state.shopTab = 'list';
+
   let h = '<div class="seg" style="margin-bottom:16px">'
-    + segBtn('coop', 'コープ注文') + segBtn('list', '買い物リスト') + segBtn('money', '今月の食費')
+    + segBtn('coop', 'コープ注文') + segBtn('list', '買い物リスト')
+    + (canSeeMoney ? segBtn('money', '今月の食費') : '')
     + '</div>';
 
   if (state.shopTab === 'coop') h += shoppingCoop();
   else if (state.shopTab === 'list') h += shoppingList();
-  else h += shoppingMoney();
+  else if (canSeeMoney) h += shoppingMoney();
 
   view(h);
 
@@ -652,8 +684,6 @@ function renderShopping() {
   document.querySelectorAll('[data-arrive]').forEach(function (b) {
     b.addEventListener('click', function () { arriveOrder(b.dataset.arrive); });
   });
-  const ao = document.getElementById('add-order');
-  if (ao) ao.addEventListener('click', addOrder);
   const ae = document.getElementById('add-expense');
   if (ae) ae.addEventListener('click', addExpense);
 }
@@ -664,26 +694,83 @@ function segBtn(key, label) {
 
 function shoppingCoop() {
   const d = state.data;
-  const arrive = nextThursday(addDays(ymd(new Date()), 14));
-  let h = '<div class="alert calm">今からの注文は <b>' + shortDate(arrive) + '(木)</b> に届きます。締切は金曜19時です。</div>';
-  h += '<div class="btn-row"><a class="btn" href="https://www.kobe.coop.or.jp/" target="_blank" rel="noopener">コープこうべのサイトを開く</a>'
-    + '<button class="btn primary" id="add-order">注文を1件足す</button></div>';
+  const today = ymd(new Date());
+  const arrive = nextThursday(addDays(today, 14));
 
-  const open = d.orders.filter(function (o) { return o['状態'] === '注文済'; });
-  h += '<h2 class="section">注文済み（到着待ち）</h2>';
-  if (!open.length) h += '<div class="empty">まだありません。</div>';
-  open.sort(function (a, b) { return String(a['到着予定日']).localeCompare(String(b['到着予定日'])); })
-    .forEach(function (o) {
-      h += '<div class="card"><div class="card-row"><div>'
-        + '<h3>' + esc(o['商品名']) + '</h3>'
-        + '<div class="meta">' + shortDate(o['到着予定日']) + '着・' + esc(String(o['数量'] || 1)) + '個'
-        + (o['金額'] ? '・' + yen(o['金額']) : '') + '</div></div></div>'
-        + '<div class="btn-row"><button class="btn small primary" data-arrive="' + o['id'] + '|到着">届いた</button>'
-        + '<button class="btn small" data-arrive="' + o['id'] + '|欠品">欠品だった</button></div></div>';
+  let h = '<div class="alert calm">今からの注文は <b>' + shortDate(arrive) + '（木）</b> に届きます。'
+    + '締切は毎週金曜の19時です。</div>';
+  h += '<div class="btn-row">'
+    + '<a class="btn primary" href="https://www.coop-kobe.net" target="_blank" rel="noopener">コープこうべを開く</a>'
+    + '</div>';
+
+  /* --- 2週間後までの献立で使う食材のうち、いま無いもの --- */
+  const limit = addDays(today, 14);
+  const need = {};
+  d.plan.forEach(function (p) {
+    const day = String(p['日付']).slice(0, 10);
+    if (day < today || day > limit || p['状態'] === '変更') return;
+    const m = byId(d.menus, p['menu_id']);
+    if (!m) return;
+    splitList(m['材料']).forEach(function (f) {
+      if (!need[f]) need[f] = { 回数: 0, 初出: day };
+      need[f].回数++;
     });
+  });
 
-  h += '<div class="note">今週のラインナップは毎週変わります。カタログを見ながらここに足していってください。'
-    + '（締切前のカタログ確認は、Claudeに頼めば一緒に見られます）</div>';
+  const inStock = {};
+  d.stock.forEach(function (s) { if (num(s['残数']) > 0) inStock[s['名称']] = true; });
+
+  const missing = Object.keys(need)
+    .filter(function (f) { return !inStock[f]; })
+    .map(function (f) {
+      const info = byKey(d.foods, '食材名', f) || {};
+      return { 名前: f, 調達先: info['標準の調達先'] || 'スーパー', 回数: need[f].回数, 初出: need[f].初出 };
+    })
+    .sort(function (x, y) { return y.回数 - x.回数; });
+
+  const coopFirst = missing.filter(function (x) { return x.調達先 === 'コープ'; });
+  const others = missing.filter(function (x) { return x.調達先 !== 'コープ'; });
+
+  h += '<h2 class="section">2週間後までに要りそうなもの</h2>';
+  if (!missing.length) {
+    h += '<div class="empty">いまの献立と在庫では、足りなくなるものはありません。</div>';
+  } else {
+    h += '<p class="hint">' + shortDate(today) + '〜' + shortDate(limit)
+      + ' の献立で使う食材のうち、いま在庫に無いものです。使う回数が多い順に並べています。</p>';
+    if (coopFirst.length) {
+      h += '<p class="hint" style="margin-top:14px">コープで頼むもの</p>';
+      coopFirst.forEach(function (x) {
+        h += '<div class="kv"><span class="k">' + esc(x.名前) + '</span><span>'
+          + x.回数 + '回・' + shortDate(x.初出) + 'から</span></div>';
+      });
+    }
+    if (others.length) {
+      h += '<p class="hint" style="margin-top:14px">スーパー・八百屋で買うもの（参考）</p>';
+      others.forEach(function (x) {
+        h += '<div class="kv"><span class="k">' + esc(x.名前) + '</span><span>'
+          + esc(x.調達先) + '・' + x.回数 + '回</span></div>';
+      });
+    }
+  }
+
+  /* --- 到着待ちがあるときだけ出す --- */
+  const open = d.orders.filter(function (o) { return o['状態'] === '注文済'; });
+  if (open.length) {
+    h += '<h2 class="section">到着待ち</h2>';
+    open.sort(function (a2, b2) { return String(a2['到着予定日']).localeCompare(String(b2['到着予定日'])); })
+      .forEach(function (o) {
+        h += '<div class="card"><div class="card-row"><div>'
+          + '<h3>' + esc(o['商品名']) + '</h3>'
+          + '<div class="meta">' + shortDate(o['到着予定日']) + '着・' + esc(String(o['数量'] || 1)) + '個'
+          + (o['金額'] ? '・' + yen(o['金額']) : '') + '</div></div></div>'
+          + '<div class="btn-row"><button class="btn small primary" data-arrive="' + o['id'] + '|到着">届いた</button>'
+          + '<button class="btn small" data-arrive="' + o['id'] + '|欠品">欠品だった</button></div></div>';
+    });
+  }
+
+  h += '<div class="note">カタログの中身は毎週変わるので、アプリでは持っていません。'
+    + '金曜の締切前にコープこうべのサイトを開いて、上のリストと見比べながら注文してください。'
+    + '<br>注文した中身をアプリに手で入れる機能は、手間のわりに合わないので付けていません。</div>';
   return h;
 }
 
@@ -756,30 +843,6 @@ function shoppingMoney() {
     h += '<div class="kv"><span class="k">' + shortDate(e['日付']) + '　' + esc(e['店']) + '</span><span>' + yen(e['金額']) + '</span></div>';
   });
   return h;
-}
-
-function addOrder() {
-  const arrive = nextThursday(addDays(ymd(new Date()), 14));
-  openSheet('コープの注文を足す',
-    '<label class="field">商品名<input type="text" id="o-name"></label>'
-    + '<label class="field">数量<input type="number" id="o-qty" value="1" min="1"></label>'
-    + '<label class="field">金額（分かれば）<input type="number" id="o-price" inputmode="numeric"></label>'
-    + '<label class="field">到着予定日<input type="date" id="o-date" value="' + arrive + '"></label>'
-    + '<div class="btn-row"><button class="btn primary" id="o-save">保存</button></div>');
-  document.getElementById('o-save').addEventListener('click', async function () {
-    const name = document.getElementById('o-name').value.trim();
-    if (!name) return toast('商品名を入れてください');
-    closeSheet();
-    await save('orders', [{
-      注文日: ymd(new Date()),
-      到着予定日: document.getElementById('o-date').value,
-      商品名: name,
-      数量: num(document.getElementById('o-qty').value) || 1,
-      金額: num(document.getElementById('o-price').value),
-      状態: '注文済',
-    }]);
-    toast('注文に足しました');
-  });
 }
 
 async function arriveOrder(arg) {
@@ -889,10 +952,15 @@ function renderBaby() {
   logs.forEach(function (b) {
     h += '<div class="card"><div class="card-row"><div>'
       + '<h3>' + esc(b['メニュー名']) + '</h3>'
-      + '<div class="meta">' + esc([b['食事区分'], b['食べた量'], b['機嫌']].filter(Boolean).join('・')) + '</div>'
+      + '<div class="meta">' + esc([b['食事区分'], b['食べた量'], b['機嫌'],
+          b['ミルクml'] ? 'ミルク' + num(b['ミルクml']) + 'ml' : ''].filter(Boolean).join('・')) + '</div>'
       + (b['はじめて食材'] ? '<div class="meta"><span class="badge free">はじめて</span> ' + esc(b['はじめて食材']) + '</div>' : '')
-      + '</div></div></div>';
+      + (b['メモ'] ? '<div class="meta">' + esc(b['メモ']) + '</div>' : '')
+      + '</div><button class="btn small" data-babyedit="' + b['id'] + '">直す</button></div></div>';
   });
+  h += '<div class="btn-row"><button class="btn primary" id="baby-add">記録する</button></div>';
+  h += '<p class="hint">押した時点でスプレッドシートに書き込まれます。あとでまとめて保存ではないので、'
+    + '途中でアプリを閉じても消えません。</p>';
 
   /* --- 間があいているもの（事実の提示だけ） --- */
   const gaps = all.filter(function (f) {
@@ -984,6 +1052,100 @@ function renderBaby() {
   document.querySelectorAll('[data-firsttry]').forEach(function (b) {
     b.addEventListener('click', function () { recordFirstTry(b.dataset.firsttry); });
   });
+  document.getElementById('baby-add').addEventListener('click', function () { editBabyLog(null); });
+  document.querySelectorAll('[data-babyedit]').forEach(function (b) {
+    b.addEventListener('click', function () { editBabyLog(b.dataset.babyedit); });
+  });
+}
+
+/**
+ * 離乳食の記録を足す・直す。
+ * 保存を押した時点でスプレッドシートに書き込む（端末に貯めておかない）。
+ */
+function editBabyLog(id) {
+  const b = id ? (byId(state.data.baby_log, id) || {}) : {};
+  const slots = ['朝', '昼', '夕', 'おやつ'];
+  const amounts = ['予定', '拒否', '少し', '半分', '完食'];
+  const moods = ['ごきげん', 'ふつう', 'ぐずり'];
+
+  function seg(name, list, cur) {
+    return '<div class="seg" data-seg="' + name + '">' + list.map(function (v) {
+      return '<button data-v="' + esc(v) + '" aria-pressed="' + (cur === v) + '">' + esc(v) + '</button>';
+    }).join('') + '</div>';
+  }
+
+  openSheet(id ? '記録を直す' : '離乳食の記録',
+    '<label class="field">いつ<input type="date" id="b-date" value="'
+      + esc(String(b['日付'] || ymd(new Date())).slice(0, 10)) + '"></label>'
+    + '<label class="field">食事</label>' + seg('slot', slots, b['食事区分'] || '昼')
+    + '<label class="field">メニュー<input type="text" id="b-menu" value="' + esc(b['メニュー名'] || '') + '" placeholder="10倍がゆ、にんじんペースト など"></label>'
+    + '<label class="field">はじめての食材（あれば）<input type="text" id="b-first" value="' + esc(b['はじめて食材'] || '') + '" list="b-foods"></label>'
+    + '<datalist id="b-foods">'
+      + (state.data.baby_foods || []).map(function (f) { return '<option value="' + esc(f['食材名']) + '">'; }).join('')
+      + '</datalist>'
+    + '<label class="field">どれくらい食べたか</label>' + seg('amount', amounts, b['食べた量'] || '完食')
+    + '<label class="field">機嫌</label>' + seg('mood', moods, b['機嫌'] || 'ごきげん')
+    + '<label class="field">このあとのミルク（ml・任意）<input type="number" id="b-milk" inputmode="numeric" value="' + esc(String(b['ミルクml'] || '')) + '"></label>'
+    + '<label class="field">メモ・様子<textarea id="b-memo">' + esc(b['メモ'] || '') + '</textarea></label>'
+    + '<div class="btn-row"><button class="btn primary" id="b-save">保存</button>'
+      + (id ? '<button class="btn" id="b-del">削除</button>' : '') + '</div>');
+
+  const picked = { slot: b['食事区分'] || '昼', amount: b['食べた量'] || '完食', mood: b['機嫌'] || 'ごきげん' };
+  document.querySelectorAll('[data-seg]').forEach(function (g) {
+    g.querySelectorAll('button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        picked[g.dataset.seg] = btn.dataset.v;
+        g.querySelectorAll('button').forEach(function (x) {
+          x.setAttribute('aria-pressed', String(x === btn));
+        });
+      });
+    });
+  });
+
+  document.getElementById('b-save').addEventListener('click', async function () {
+    const menu = document.getElementById('b-menu').value.trim();
+    if (!menu) return toast('メニューを入れてください');
+    const first = document.getElementById('b-first').value.trim();
+    const date = document.getElementById('b-date').value;
+    closeSheet();
+
+    const row = {
+      id: id || '',
+      日付: date,
+      食事区分: picked.slot,
+      メニュー名: menu,
+      参考URL: b['参考URL'] || '',
+      材料: b['材料'] || '',
+      はじめて食材: first,
+      食べた量: picked.amount,
+      機嫌: picked.mood,
+      メモ: document.getElementById('b-memo').value,
+      ミルクml: num(document.getElementById('b-milk').value) || '',
+    };
+    if (!row.id) delete row.id;
+
+    await api('upsert', { sheet: 'baby_log', rows: [row] });
+
+    // はじめて食べた食材は、チェックリスト側にも日付を入れる
+    if (first) {
+      const f = byKey(state.data.baby_foods, '食材名', first);
+      if (f && !f['初めて食べた日']) {
+        f['初めて食べた日'] = date;
+        await api('upsert', { sheet: 'baby_foods', rows: [f] });
+      }
+    }
+    await reload();
+    toast('記録しました');
+  });
+
+  const del = document.getElementById('b-del');
+  if (del) del.addEventListener('click', async function () {
+    if (!confirm('この記録を消します。よろしいですか？')) return;
+    closeSheet();
+    await api('remove', { sheet: 'baby_log', ids: [id] });
+    await reload();
+    toast('消しました');
+  });
 }
 
 async function recordFirstTry(name) {
@@ -1003,7 +1165,8 @@ function renderSettings() {
     + '<label class="field">GASのウェブアプリURL<input type="url" id="s-url" value="' + esc(cfg.url || '') + '" placeholder="https://script.google.com/macros/s/.../exec"></label>'
     + '<label class="field">家族の合言葉<input type="password" id="s-secret" value="' + esc(cfg.secret || '') + '"></label>'
     + '<div class="btn-row"><button class="btn primary" id="s-save">保存してつなぐ</button></div>'
-    + '<div class="note">この2つはこの端末の中にだけ保存されます。アプリのコードにも、GitHubにも入りません。</div>';
+    + '<div class="note">この2つはこの端末の中にだけ保存されます。アプリのコードにも、GitHubにも入りません。'
+    + '<br>いま動いている画面のバージョン： <b>' + APP_VERSION + '</b></div>';
 
   if (state.data) {
     h += '<h2 class="section">わたしは誰か</h2><div class="seg" id="me-seg">';
