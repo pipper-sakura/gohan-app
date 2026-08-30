@@ -7,7 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
-const APP_VERSION = '2026-08-30-21';
+const APP_VERSION = '2026-08-30-25';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -32,6 +32,19 @@ document.addEventListener('DOMContentLoaded', function () {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(function () {});
   }
+
+  // 家族が別の端末で変えた内容を拾うため、戻ってきたときに読み直す。
+  // 何度も呼ばないよう、前回から30秒あいたときだけ。
+  function refreshIfStale() {
+    if (!cfg.url || !cfg.secret || state.loading) return;
+    const last = state.loadedAt ? new Date(state.loadedAt).getTime() : 0;
+    if (Date.now() - last < 30000) return;
+    reload();
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) refreshIfStale();
+  });
+  window.addEventListener('online', function () { reload(); });
 
   paintMe();
   if (!cfg.url || !cfg.secret) {
@@ -88,14 +101,19 @@ async function api(action, payload) {
 }
 
 async function reload() {
+  state.loading = true;
   try {
     state.data = await api('load', {});
     state.lastError = null;
+    state.stale = false;
+    state.loadedAt = new Date().toISOString();
     cacheData(state.data);
     render();
   } catch (err) {
     // 何が起きたのかを隠さない。「つながりません」だけだと原因が追えない。
     state.lastError = err.message;
+    state.authError = /合言葉/.test(err.message);
+    state.stale = true;
     const cached = readCache();
     if (cached) {
       state.data = cached;
@@ -110,20 +128,42 @@ async function reload() {
       if (r2) r2.addEventListener('click', function () { toast('つないでいます…'); reload(); });
       state.lastError = msg;
     }
+  } finally {
+    state.loading = false;
   }
 }
 
 async function save(sheet, rows) {
-  await api('upsert', { sheet: sheet, rows: rows });
+  toast('保存しています…');
+  try {
+    await api('upsert', { sheet: sheet, rows: rows });
+  } catch (err) {
+    toast('保存できませんでした：' + err.message);
+    throw err;
+  }
   await reload();
 }
 
-/* オフラインでも前回分は見られるようにしておく */
+/* オフラインでも前回分は見られるようにしておく。
+   つなぎ先を変えたときに前のデータが混ざらないよう、URLごとに分けて持つ。 */
+function cacheKey() {
+  const u = String(cfg.url || '');
+  let n = 0;
+  for (let i = 0; i < u.length; i++) n = (n * 31 + u.charCodeAt(i)) % 100000007;
+  return 'gohan.cache.' + n;
+}
 function cacheData(d) {
-  try { localStorage.setItem('gohan.cache', JSON.stringify(d)); } catch (e) {}
+  try {
+    localStorage.setItem(cacheKey(), JSON.stringify({ at: new Date().toISOString(), d: d }));
+  } catch (e) {}
 }
 function readCache() {
-  try { return JSON.parse(localStorage.getItem('gohan.cache') || 'null'); } catch (e) { return null; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(cacheKey()) || 'null');
+    if (!raw) return null;
+    state.loadedAt = raw.at || null;
+    return raw.d;
+  } catch (e) { return null; }
 }
 
 /* ================================================================== */
@@ -140,11 +180,18 @@ function render() {
 }
 
 function view(html) {
-  const warn = state.lastError
-    ? '<div class="alert">いまの内容は前回読み込んだものです。保存もできません。<br><br>'
-      + '<b>原因</b>：' + esc(state.lastError)
-      + '<div class="btn-row"><button class="btn small" id="err-retry">もう一度つなぐ</button></div></div>'
-    : '';
+  let warn = '';
+  if (state.lastError) {
+    const when = state.loadedAt
+      ? '（前回の読み込み：' + new Date(state.loadedAt).toLocaleString('ja-JP') + '）' : '';
+    warn = '<div class="alert">'
+      + (state.authError
+          ? '<b>合言葉が違います。</b>設定タブで入れ直してください。ここに出ているのは前回の内容です。'
+          : 'いまの内容は前回読み込んだものです。<b>この画面での変更は保存されません。</b>')
+      + esc(when)
+      + '<br><br><b>原因</b>：' + esc(state.lastError)
+      + '<div class="btn-row"><button class="btn small" id="err-retry">もう一度つなぐ</button></div></div>';
+  }
   document.getElementById('view').innerHTML = warn + html;
   const r = document.getElementById('err-retry');
   if (r) r.addEventListener('click', function () { toast('つないでいます…'); reload(); });
@@ -168,6 +215,9 @@ function renderToday() {
   const d = state.data;
   const me = myMember();
   const today = ymd(new Date());
+  // 献立を立てない人には、必要なところだけを出す。
+  // 情報が多いと「どれを食べていいか」が埋もれてしまうため。
+  const simple = (d['_権限'] === 'light') || ((me || {})['区分'] === 'ライト');
   let h = '';
 
   /* --- 今日やること --- */
@@ -243,6 +293,9 @@ function renderToday() {
     });
   }
 
+  /* --- 今日のごはん（予定と、実際に食べたもの） --- */
+  if (!simple) h += todayMealsSection(today);
+
   /* --- ごはん（炊いてパックに分けたもの） --- */
   h += '<h2 class="section">ごはん</h2>';
   {
@@ -310,9 +363,18 @@ function renderToday() {
   /* --- 予定あり --- */
   const reserved = mine.filter(function (s) { return s['用途'] === '予定あり'; });
   if (reserved.length) {
-    h += '<h2 class="section">予定あり</h2>';
-    h += '<p class="hint">献立で使う予定のものです。食べたいときは「これ食べたい」を押すと、差し替えの相談として残ります。</p>';
-    reserved.forEach(function (s) { h += stockCard(s, me, true); });
+    if (simple) {
+      // 使ってはいけないものは、たたんで置く。数だけ分かれば足りる。
+      h += '<details style="margin-top:14px"><summary class="hint" style="cursor:pointer">'
+        + '献立に使う予定のもの（' + reserved.length + '）　※こちらは残しておいてください</summary>'
+        + '<div style="margin-top:8px">'
+        + reserved.map(function (s) { return stockCard(s, me, true); }).join('')
+        + '</div></details>';
+    } else {
+      h += '<h2 class="section">予定あり</h2>';
+      h += '<p class="hint">献立で使う予定のものです。食べたいときは「これ食べたい」を押すと、差し替えの相談として残ります。</p>';
+      reserved.forEach(function (s) { h += stockCard(s, me, true); });
+    }
   }
 
   /* --- 手伝えるとき --- */
@@ -601,6 +663,110 @@ function stockCard(s, me, isReserved) {
     + '</div></div>';
 }
 
+/**
+ * 今日の献立。予定どおり食べたか、違うものを食べたかをここで残す。
+ *
+ * 予定と違ったときは、元の予定を消さずに「変更」として残す。
+ * 消すと、何を食べなかったのかが分からなくなるため。
+ */
+function todayMealsSection(today) {
+  const d = state.data;
+  const rows = d.plan.filter(function (p) { return String(p['日付']).slice(0, 10) === today; });
+  if (!rows.length) return '';
+
+  let h = '<h2 class="section">今日のごはん</h2>';
+  ['朝', '昼', '夜'].forEach(function (slot) {
+    const list = rows.filter(function (p) { return p['食事区分'] === slot; });
+    if (!list.length) return;
+    h += '<p class="hint" style="margin-top:12px">' + slot + '</p>';
+    list.forEach(function (p) {
+      const changed = p['状態'] === '変更';
+      const eaten = p['状態'] === '食べた';
+      h += '<div class="card"' + (changed ? ' style="opacity:.5"' : '') + '>'
+        + '<div class="card-row"><div>'
+        + '<h3>' + esc(menuName(p['menu_id'])) + '</h3>'
+        + '<div class="meta">' + (changed ? '食べませんでした' : (eaten ? '食べました' : '予定')) + '</div>'
+        + '</div><span class="badge ' + (eaten ? 'free' : (changed ? 'plain' : 'reserved')) + '">'
+        + esc(p['状態']) + '</span></div>'
+        + '<div class="btn-row">'
+        + (changed ? '' :
+            (eaten
+              ? '<button class="btn small" data-meal="' + esc(p['id']) + '|予定">戻す</button>'
+              : '<button class="btn small primary" data-meal="' + esc(p['id']) + '|食べた">食べた</button>'
+                + '<button class="btn small" data-swap="' + esc(p['id']) + '">違うものを食べた</button>'))
+        + '<button class="btn small" data-recipe="' + esc(p['menu_id']) + '">レシピ</button>'
+        + '<button class="btn small" data-ng="' + esc(p['menu_id']) + '|' + esc(slot) + '">これはNG</button>'
+        + '</div></div>';
+    });
+  });
+
+  h += '<div class="btn-row"><button class="btn" id="replan">明日からを組み直す</button></div>';
+  h += '<p class="hint">気分で違うものを食べた日は「違うものを食べた」を押してください。'
+    + '元の予定は消さずに残り、使わなかった食材は「どうぞ」に戻ります。</p>';
+  return h;
+}
+
+/** 予定と違うものを食べたときの差し替え */
+function swapMeal(planId) {
+  const p = byId(state.data.plan, planId);
+  if (!p) return;
+  const slot = p['食事区分'];
+  const list = state.data.menus.filter(function (m) {
+    if (slot === '昼' && m['時間帯'] === '夜') return false;
+    return true;
+  });
+
+  let h = '<p class="hint">実際に食べたものを選んでください。'
+    + '元の「' + esc(menuName(p['menu_id'])) + '」は、食べなかった記録として残ります。</p>';
+  list.forEach(function (m) {
+    h += '<button class="pick" data-swapto="' + esc(m['id']) + '">' + esc(m['メニュー名'])
+      + '<div class="meta">' + esc([m['区分'], m['調理器具']].filter(Boolean).join('・')) + '</div></button>';
+  });
+  h += '<div class="btn-row"><button class="btn" id="swap-none">食べなかっただけ（差し替えなし）</button></div>';
+
+  openSheet('違うものを食べた', h);
+
+  document.querySelectorAll('[data-swapto]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      closeSheet();
+      try {
+        await api('swapMeal', { planId: planId, newMenuId: b.dataset.swapto });
+        await reload();
+        toast('差し替えました');
+      } catch (err) { toast(err.message); }
+    });
+  });
+  document.getElementById('swap-none').addEventListener('click', async function () {
+    closeSheet();
+    try {
+      await api('swapMeal', { planId: planId, newMenuId: '' });
+      await reload();
+      toast('食べなかった記録にしました');
+    } catch (err) { toast(err.message); }
+  });
+}
+
+/** これはNG。次からの提案に出さないための記録 */
+function markNg(menuId, slot) {
+  const reasons = ['家族が食べない', '作るのが大変', '最近つづいた', 'この時間帯には合わない', 'その他'];
+  let h = '<p class="hint">「' + esc(menuName(menuId)) + '」を、これからの' + esc(slot)
+    + 'の提案に出さないようにします。理由を選んでください。</p>';
+  reasons.forEach(function (r) {
+    h += '<button class="pick" data-ngr="' + esc(r) + '">' + esc(r) + '</button>';
+  });
+  openSheet('これはNG', h);
+  document.querySelectorAll('[data-ngr]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      closeSheet();
+      try {
+        await api('feedback', { menu_id: menuId, 時間帯: slot, 判定: 'NG', 理由: b.dataset.ngr });
+        await reload();
+        toast('次から' + slot + 'の提案に出しません');
+      } catch (err) { toast(err.message); }
+    });
+  });
+}
+
 /** 手伝えるとき：①仕込みを手伝う ②今すぐ作る ③野菜の使い切り */
 function helpSection(me) {
   const d = state.data;
@@ -785,7 +951,9 @@ function renderPlan() {
       + '<button class="btn' + (isThisWeek ? ' primary' : '') + '" data-apply="' + days[0] + '|' + days[6] + '">この週を在庫に反映</button>'
       + '<button class="btn" data-shop="' + days[0] + '|' + days[6] + '">この週の買い物リスト</button>'
       + '</div>';
+    h += lunchWarnings(days);
     h += lunchSheet(days);
+    h += varietySection(days);
   });
 
   h += '<p class="hint">「この週を在庫に反映」を押すと、その週の献立で使う主役の食材（肉・魚・卵・豆腐など）が'
@@ -1020,6 +1188,83 @@ function weekTable(days) {
     h += '</tr>';
   });
   return h + '</tbody></table>';
+}
+
+/**
+ * 昼に置けない献立が入っていないか確かめる。
+ * 昼は週末にオーブンでまとめて作るので、
+ * オーブンを使わないものや、解凍が要るものは置けない。
+ */
+function lunchWarnings(days) {
+  const d = state.data;
+  const bad = [];
+  days.forEach(function (day) {
+    const dow = new Date(day + 'T00:00:00').getDay();
+    if (dow === 0 || dow === 6) return;
+    d.plan.forEach(function (p) {
+      if (String(p['日付']).slice(0, 10) !== day) return;
+      if (p['食事区分'] !== '昼' || p['状態'] === '変更') return;
+      const m = byId(d.menus, p['menu_id']);
+      if (!m) return;
+      const reasons = [];
+      if (String(m['調理器具']).indexOf('オーブン') < 0) reasons.push('オーブンで作らない');
+      if (m['解凍要否'] === '要') reasons.push('解凍が要る');
+      if (reasons.length) {
+        bad.push(esc(shortDate(day) + '　' + (m['メニュー名'] || '') + '（' + reasons.join('・') + '）'));
+      }
+    });
+  });
+  if (!bad.length) return '';
+  return '<div class="alert">この週の昼に、まとめて作れないものが入っています。'
+    + '差し替えるか、そのまま作るなら当日に作ってください。<br><br>'
+    + bad.join('<br>') + '</div>';
+}
+
+/**
+ * 今週の食材のかたより。
+ * 栄養の摂取量ではなく、「どの分類の食材を何回使うか」と「野菜の種類」を数えているだけ。
+ */
+function varietySection(days) {
+  const d = state.data;
+  const cls = {};
+  (d.foods || []).forEach(function (f) { cls[f['食材名']] = f['栄養素分類']; });
+
+  const count = { '炭水化物': 0, 'ビタミン・ミネラル': 0, 'タンパク質': 0, 'その他': 0 };
+  const veg = {};
+  const mains = {};
+  let any = false;
+
+  days.forEach(function (day) {
+    d.plan.forEach(function (p) {
+      if (String(p['日付']).slice(0, 10) !== day || p['状態'] === '変更') return;
+      const m = byId(d.menus, p['menu_id']);
+      if (!m) return;
+      any = true;
+      if (m['区分'] === '主菜') mains[m['メニュー名']] = (mains[m['メニュー名']] || 0) + 1;
+      splitList(m['材料']).forEach(function (f) {
+        const k = cls[f] || 'その他';
+        count[k] = (count[k] || 0) + 1;
+        if (k === 'ビタミン・ミネラル') veg[f] = true;
+      });
+    });
+  });
+  if (!any) return '';
+
+  const repeated = Object.keys(mains).filter(function (n) { return mains[n] >= 3; });
+
+  return '<h2 class="section">今週の食材のかたより</h2>'
+    + '<div class="card">'
+    + Object.keys(count).filter(function (k) { return count[k]; }).map(function (k) {
+        return '<div class="kv"><span class="k">' + esc(k) + '</span><span>' + count[k] + '回</span></div>';
+      }).join('')
+    + '<div class="kv"><span class="k">使う野菜の種類</span><span>' + Object.keys(veg).length + '種類</span></div>'
+    + (repeated.length
+        ? '<div class="alert" style="margin-top:10px">同じ主菜が3回以上出ています：'
+          + esc(repeated.join('、')) + '</div>'
+        : '')
+    + '</div>'
+    + '<p class="hint">これは食材を使う回数と種類を数えたものです。'
+      + '栄養の摂取量ではありません。</p>';
 }
 
 /* その週の平日昼5食を、オーブンでまとめて作るための一覧 */
@@ -1587,6 +1832,13 @@ function renderShopping() {
   });
   const ae = document.getElementById('add-expense');
   if (ae) ae.addEventListener('click', addExpense);
+  const sr = document.getElementById('scan-receipt');
+  if (sr) sr.addEventListener('click', function () { document.getElementById('receipt-file').click(); });
+  const rf = document.getElementById('receipt-file');
+  if (rf) rf.addEventListener('change', function () {
+    if (rf.files && rf.files[0]) readReceipt(rf.files[0]);
+    rf.value = '';
+  });
 }
 
 function segBtn(key, label) {
@@ -1733,7 +1985,9 @@ function shoppingMoney() {
         : '<div class="alert calm" style="margin-top:10px">このペースなら予算内に収まりそうです</div>')
     + '</div>';
 
-  h += '<div class="btn-row"><button class="btn primary" id="add-expense">買い物を1件足す</button></div>';
+  h += '<div class="btn-row"><button class="btn primary" id="add-expense">買い物を1件足す</button>'
+    + '<button class="btn" id="scan-receipt">レシートを撮る</button></div>'
+    + '<input type="file" accept="image/*" capture="environment" id="receipt-file" hidden>';
 
   h += '<h2 class="section">店ごと</h2>';
   Object.keys(byStore).forEach(function (s) {
@@ -1782,6 +2036,114 @@ function addExpense() {
       メモ: document.getElementById('e-memo').value,
     }]);
     toast('記録しました');
+  });
+}
+
+/**
+ * 写真を小さくしてから送る。
+ * そのまま送ると数MBになり、通信に時間がかかって失敗しやすい。
+ */
+function shrinkImage(file, maxSide) {
+  return new Promise(function (resolve, reject) {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      let w = img.width, hgt = img.height;
+      const scale = Math.min(1, maxSide / Math.max(w, hgt));
+      w = Math.round(w * scale); hgt = Math.round(hgt * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = hgt;
+      c.getContext('2d').drawImage(img, 0, 0, w, hgt);
+      resolve(c.toDataURL('image/jpeg', 0.75).split(',')[1]);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('画像を読めませんでした')); };
+    img.src = url;
+  });
+}
+
+/** レシートを撮って、食費と在庫に入れる */
+async function readReceipt(file) {
+  toast('レシートを読んでいます…（20秒ほど）');
+  let r;
+  try {
+    const b64 = await shrinkImage(file, 1400);
+    r = await api('readReceipt', { dataBase64: b64, mimeType: 'image/jpeg' });
+  } catch (err) {
+    return toast('読み取れませんでした：' + err.message);
+  }
+
+  const items = r['品目'] || [];
+  const stores = ['コープこうべ', 'ライフ', '近所のスーパー', '八百屋', 'その他'];
+  const store = stores.indexOf(r['店']) >= 0 ? r['店'] : 'その他';
+
+  let h = '<p class="hint">読み取った内容です。<b>間違いがあるので必ず確かめてください。</b>'
+    + '直してから保存できます。</p>'
+    + '<label class="field">日付<input type="date" id="rc2-date" value="'
+      + esc(String(r['日付'] || ymd(new Date())).slice(0, 10)) + '"></label>'
+    + '<label class="field">店<select id="rc2-store">'
+      + stores.map(function (v) {
+          return '<option' + (v === store ? ' selected' : '') + '>' + esc(v) + '</option>';
+        }).join('')
+      + '</select></label>'
+    + '<label class="field">合計金額<input type="number" id="rc2-total" inputmode="numeric" value="'
+      + esc(String(num(r['合計']) || '')) + '"></label>';
+
+  if (items.length) {
+    h += '<label class="field">読み取った品目（在庫に入れたいものを選ぶ）</label>'
+      + '<div class="seg" style="max-height:30vh;overflow-y:auto;padding:4px 0">'
+      + items.map(function (it, i) {
+          const name = it['食材'] || it['名前'];
+          return '<button type="button" data-ritem="' + i + '" data-rname="' + esc(name)
+            + '" aria-pressed="false">' + esc(name)
+            + (num(it['金額']) ? ' ' + yen(it['金額']) : '') + '</button>';
+        }).join('')
+      + '</div>'
+      + '<p class="hint">選んだものは、名前だけで在庫に足します（個数は1、置き場所は冷蔵）。'
+        + 'あとから「あるもの」で直せます。</p>';
+  } else {
+    h += '<p class="hint">品目は読み取れませんでした。金額だけ記録できます。</p>';
+  }
+
+  h += '<div class="btn-row"><button class="btn primary" id="rc2-save">記録する</button></div>';
+  openSheet('レシートの読み取り', h);
+
+  const picked = {};
+  document.querySelectorAll('[data-ritem]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const k = b.dataset.rname;
+      if (picked[k]) delete picked[k]; else picked[k] = true;
+      b.setAttribute('aria-pressed', String(!!picked[k]));
+    });
+  });
+
+  document.getElementById('rc2-save').addEventListener('click', async function () {
+    const total = num(document.getElementById('rc2-total').value);
+    if (!total) return toast('合計金額を入れてください');
+    const date = document.getElementById('rc2-date').value;
+    const st = document.getElementById('rc2-store').value;
+    closeSheet();
+    try {
+      await api('upsert', { sheet: 'expenses', rows: [{
+        日付: date, 店: st, 金額: total,
+        支払者: (myMember() || {}).名前 || '', メモ: 'レシートから',
+      }] });
+
+      const names = Object.keys(picked);
+      if (names.length) {
+        await api('upsert', { sheet: 'stock', rows: names.map(function (n) {
+          return {
+            名称: n, 種別: '生鮮', 作った日: date, 残数: 1, 保存場所: '冷蔵', 期限: '',
+            用途: '自由', plan_id: '', 調理要否: '要調理', 取り置き先: '', メモ: 'レシートから',
+            食べる予定日: '', 保存期限: '', 調理ロット: '',
+          };
+        }) });
+      }
+      await reload();
+      toast('記録しました' + (names.length ? '（' + names.length + '件を在庫に）' : ''));
+    } catch (err) {
+      toast('保存できませんでした：' + err.message);
+    }
   });
 }
 
@@ -2464,7 +2826,12 @@ function renderSettings() {
       + '<button class="btn" id="s-test">つなぎ先をためす</button></div>'
     + '<div id="s-testout"></div>'
     + '<div class="note">この2つはこの端末の中にだけ保存されます。アプリのコードにも、GitHubにも入りません。'
-    + '<br>いま動いている画面のバージョン： <b>' + APP_VERSION + '</b></div>';
+    + '<br>いま動いている画面のバージョン： <b>' + APP_VERSION + '</b>'
+    + (state.loadedAt
+        ? '<br>最後に読み込んだ時刻： ' + esc(new Date(state.loadedAt).toLocaleString('ja-JP'))
+          + (state.stale ? '（いまはつながっていません）' : '')
+        : '')
+    + '</div>';
 
   if (state.data) {
     h += '<h2 class="section">わたしは誰か</h2><div class="seg" id="me-seg">';
