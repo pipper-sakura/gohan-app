@@ -7,7 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
-const APP_VERSION = '2026-08-30-18';
+const APP_VERSION = '2026-08-30-19';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -318,6 +318,9 @@ function renderToday() {
   document.querySelectorAll('[data-stockedit]').forEach(function (b) {
     b.addEventListener('click', function () { editStock(b.dataset.stockedit); });
   });
+  document.querySelectorAll('[data-recipe]').forEach(function (b) {
+    b.addEventListener('click', function () { menuDetail(b.dataset.recipe); });
+  });
 }
 
 /**
@@ -532,6 +535,9 @@ function editStock(id, prefill) {
 
 function stockCard(s, me, isReserved) {
   const mark = ngMark(me, s);
+  // 作り置きなら、同じ名前のメニューの作り方を開けるようにする
+  const recipe = (s['種別'] === '作り置き') ? byKey(state.data.menus, 'メニュー名', s['名称']) : null;
+  const recipeId = recipe ? recipe.id : '';
   const bits = [];
   if (s['保存場所']) bits.push(s['保存場所']);
   if (useBy(s)) bits.push(shortDate(useBy(s)) + 'まで');
@@ -557,6 +563,7 @@ function stockCard(s, me, isReserved) {
         ? '<button class="btn small" data-want="' + esc(s['id']) + '">これ食べたい</button>'
         : '<button class="btn small" data-eat="' + esc(s['id']) + '">食べた</button>')
     + '<button class="btn small" data-stockedit="' + esc(s['id']) + '">直す</button>'
+    + (recipeId ? '<button class="btn small" data-recipe="' + esc(recipeId) + '">レシピ</button>' : '')
     + '</div></div>';
 }
 
@@ -866,7 +873,10 @@ function renderCookSheet() {
         + shortDate(it.eatOn) + '(' + WEEK_LABEL[dow] + ')　' + esc(it.menu['メニュー名'] || '') + '</h3>'
         + '<div class="meta">' + esc(splitList(it.menu['材料']).join('・')) + '</div></div>'
         + '<span class="badge ' + (it.place === '冷凍' ? 'reserved' : 'plain') + '">' + it.place + '</span></div>'
-        + (it.menu['手順メモ'] ? '<div class="meta" style="margin-top:6px">' + esc(it.menu['手順メモ']) + '</div>' : '')
+        + (it.menu['手順メモ']
+            ? '<details style="margin-top:6px"><summary class="meta" style="cursor:pointer">作り方をひらく</summary>'
+              + '<div class="meta" style="white-space:pre-wrap;margin-top:6px">' + esc(it.menu['手順メモ']) + '</div></details>'
+            : '<div class="meta" style="margin-top:6px">作り方がまだ書かれていません</div>')
         + '</div>';
     }).join(''),
     '1食ずつ、食べる日の順に');
@@ -1149,8 +1159,12 @@ function pickMenu(day, slot) {
   if (existing.length) {
     h += '<p class="hint">いま入っているもの</p>';
     existing.forEach(function (p) {
-      h += '<button class="pick" data-del="' + esc(p['id']) + '">' + esc(menuName(p['menu_id']))
-        + '<div class="meta">押すと外します</div></button>';
+      h += '<div class="card" style="padding:10px 12px"><div class="card-row"><div>'
+        + '<h3>' + esc(menuName(p['menu_id'])) + '</h3></div></div>'
+        + '<div class="btn-row">'
+        + '<button class="btn small" data-recipe="' + esc(p['menu_id']) + '">レシピを見る</button>'
+        + '<button class="btn small" data-del="' + esc(p['id']) + '">外す</button>'
+        + '</div></div>';
     });
   }
 
@@ -1201,8 +1215,75 @@ function pickMenu(day, slot) {
     });
   });
 
+  document.querySelectorAll('[data-recipe]').forEach(function (b2) {
+    b2.addEventListener('click', function () { menuDetail(b2.dataset.recipe); });
+  });
   document.getElementById('pick-free').addEventListener('click', function () {
     freeMenu(day, slot, replaceMode ? existing : []);
+  });
+}
+
+/**
+ * メニューの詳細（材料と作り方）を見る。
+ * 作り方が長いので、開いたときにすぐ読めるよう見出しで区切る。
+ */
+function menuDetail(menuId) {
+  const m = byId(state.data.menus, menuId);
+  if (!m) return toast('メニューが見つかりません');
+  const cls = {};
+  (state.data.foods || []).forEach(function (f) { cls[f['食材名']] = f['栄養素分類']; });
+  const mark = { '炭水化物': '炭', 'ビタミン・ミネラル': 'ビ', 'タンパク質': 'タ', 'その他': '他' };
+
+  const facts = [
+    ['区分', m['区分']],
+    ['いつ食べる', m['時間帯']],
+    ['調理器具', m['調理器具']],
+    ['オーブン温度', m['オーブン温度'] ? m['オーブン温度'] + '℃' : ''],
+    ['調理時間', m['調理時間'] ? m['調理時間'] + '分' : ''],
+    ['冷凍', m['冷凍可']],
+    ['冷凍から作れるか', m['解凍要否'] === '不要' ? '作れる' : (m['解凍要否'] ? '解凍が要る' : '')],
+    ['日持ち', [
+      m['日持ち冷蔵'] ? '冷蔵' + m['日持ち冷蔵'] + '日' : '',
+      m['日持ちパーシャル'] ? 'パーシャル' + m['日持ちパーシャル'] + '日' : '',
+      num(m['日持ち冷凍']) ? '冷凍' + m['日持ち冷凍'] + '日' : '',
+    ].filter(Boolean).join('・')],
+    ['まとめて作れるもの', m['共通グループ']],
+  ].filter(function (r) { return r[1]; });
+
+  const mats = splitList(m['材料']);
+
+  let h = '<div class="card">'
+    + facts.map(function (r) {
+        return '<div class="kv"><span class="k">' + esc(r[0]) + '</span><span>' + esc(String(r[1])) + '</span></div>';
+      }).join('')
+    + '</div>';
+
+  h += '<h2 class="section">材料</h2>';
+  h += mats.length
+    ? '<div class="card">' + mats.map(function (f) {
+        const k = cls[f] || 'その他';
+        return '<div class="kv"><span class="k"><span class="badge plain" style="min-width:1.6em;text-align:center">'
+          + esc(mark[k]) + '</span> ' + esc(f) + '</span><span></span></div>';
+      }).join('') + '</div>'
+    : '<div class="empty">まだ入っていません。</div>';
+
+  h += '<h2 class="section">作り方</h2>';
+  h += m['手順メモ']
+    ? '<div class="card" style="white-space:pre-wrap">' + esc(m['手順メモ']) + '</div>'
+    : '<div class="empty">まだ書かれていません。下の「AIに書いてもらう」で下書きできます。</div>';
+
+  if (m['参考URL']) {
+    h += '<div class="btn-row"><a class="btn small" href="' + esc(m['参考URL'])
+      + '" target="_blank" rel="noopener">参考にしたレシピ</a></div>';
+  }
+
+  h += '<div class="btn-row">'
+    + '<button class="btn primary" id="md-edit">直す・AIに書いてもらう</button>'
+    + '</div>';
+
+  openSheet(m['メニュー名'], h);
+  document.getElementById('md-edit').addEventListener('click', function () {
+    freeMenu(null, null, null, m);
   });
 }
 
@@ -1217,8 +1298,9 @@ function pickMenu(day, slot) {
  * 材料・分量入りの作り方・器具・日持ちの目安が埋まる。
  * 違うところは人が直す。直した結果はそのまま台帳に残るので、次から候補に出る。
  */
-function freeMenu(day, slot, toReplace) {
+function freeMenu(day, slot, toReplace, preset) {
   const d = state.data;
+  const P = preset || null;
   const dow = day ? new Date(day + 'T00:00:00').getDay() : 0;
   const chosen = {};          // 選んだ食材
   let newFoods = [];          // AIが提案した、まだ台帳に無い食材
@@ -1276,7 +1358,8 @@ function freeMenu(day, slot, toReplace) {
   }
 
   openSheet(day ? (shortDate(day) + '(' + WEEK_LABEL[dow] + ') の' + slot + '　自分で足す') : 'メニューを足す',
-    '<label class="field">つくるもの<input type="text" id="fm-name" placeholder="唐揚げ、肉じゃが など"></label>'
+    '<label class="field">つくるもの<input type="text" id="fm-name" value="'
+      + esc(P ? P['メニュー名'] : '') + '" placeholder="唐揚げ、肉じゃが など"></label>'
     + '<div class="btn-row"><button class="btn primary" id="fm-ai">AIに下書きしてもらう</button></div>'
     + '<p class="hint" id="fm-status">メニュー名を入れて押すと、材料と作り方の下書きが入ります。'
       + 'そのあと自由に直せます。</p>'
@@ -1289,22 +1372,30 @@ function freeMenu(day, slot, toReplace) {
     + '<div class="seg" id="fm-chips" style="max-height:34vh;overflow-y:auto;padding:4px 0"></div>'
     + '<p class="hint" id="fm-count">（まだ選んでいません）</p>'
 
-    + '<label class="field">作り方（2人分の分量つき）<textarea id="fm-memo"></textarea></label>'
-    + '<label class="field">調理器具<input type="text" id="fm-tool" placeholder="オーブン、フライパン など"></label>'
-    + '<label class="field">調理時間（分）<input type="number" id="fm-min" inputmode="numeric"></label>'
-    + '<label class="field">冷凍</label>' + seg('冷凍可', ['はい', 'いいえ'], 'いいえ')
-    + '<label class="field">冷凍から作れるか</label>' + seg('解凍要否', ['不要', '要'], '要')
+    + '<label class="field">作り方（2人分の分量つき）<textarea id="fm-memo">'
+      + esc(P ? (P['手順メモ'] || '') : '') + '</textarea></label>'
+    + '<label class="field">調理器具<input type="text" id="fm-tool" value="'
+      + esc(P ? (P['調理器具'] || '') : '') + '" placeholder="オーブン、フライパン など"></label>'
+    + '<label class="field">調理時間（分）<input type="number" id="fm-min" inputmode="numeric" value="'
+      + esc(P ? String(P['調理時間'] || '') : '') + '"></label>'
+    + '<label class="field">冷凍</label>' + seg('冷凍可', ['はい', 'いいえ'], (P && P['冷凍可']) || 'いいえ')
+    + '<label class="field">冷凍から作れるか</label>'
+    + seg('解凍要否', ['不要', '要'], (P && P['解凍要否']) || '要')
     + '<div class="note">日持ちの日数はAIが出した目安です。'
       + '実際は食材や冷まし方で変わるので、怪しいときは食べずに処分してください。</div>'
     + '<div class="btn-row" style="margin-top:6px">'
-      + '<label class="field" style="margin:0">冷蔵<input type="number" id="fm-k1" inputmode="numeric" style="width:5rem"></label>'
-      + '<label class="field" style="margin:0">パーシャル<input type="number" id="fm-k2" inputmode="numeric" style="width:5rem"></label>'
-      + '<label class="field" style="margin:0">冷凍<input type="number" id="fm-k3" inputmode="numeric" style="width:5rem"></label>'
+      + '<label class="field" style="margin:0">冷蔵<input type="number" id="fm-k1" inputmode="numeric" style="width:5rem" value="'
+        + esc(P ? String(P['日持ち冷蔵'] || '') : '') + '"></label>'
+      + '<label class="field" style="margin:0">パーシャル<input type="number" id="fm-k2" inputmode="numeric" style="width:5rem" value="'
+        + esc(P ? String(P['日持ちパーシャル'] || '') : '') + '"></label>'
+      + '<label class="field" style="margin:0">冷凍<input type="number" id="fm-k3" inputmode="numeric" style="width:5rem" value="'
+        + esc(P ? String(P['日持ち冷凍'] || '') : '') + '"></label>'
     + '</div>'
 
     + '<div class="btn-row"><button class="btn primary" id="fm-save">'
       + (day ? '入れる' : '台帳に足す') + '</button></div>');
 
+  if (P) splitList(P['材料']).forEach(function (f) { chosen[f] = true; });
   paintChips();
   document.getElementById('fm-search').addEventListener('input', paintChips);
 
@@ -1430,8 +1521,11 @@ async function cookLunches(from, to) {
 /* ================================================================== */
 
 function renderShopping() {
-  // 食費は家計の話なので、ライトユーザー（お義母さん）の画面には出さない
-  const canSeeMoney = (myMember() || {})['区分'] !== 'ライト';
+  // 食費は家計の話なので出さない。
+  // 画面で隠すだけだと、端末に届いたデータは見えてしまう。
+  // サーバーが「この合言葉には食費を返さない」と決めているので、それに従う。
+  const canSeeMoney = (state.data['_権限'] !== 'light')
+    && (myMember() || {})['区分'] !== 'ライト';
   if (!canSeeMoney && state.shopTab === 'money') state.shopTab = 'list';
 
   let h = '<div class="seg" style="margin-bottom:16px">'
@@ -2390,6 +2484,29 @@ function renderSettings() {
         + '</div>';
     });
 
+    /* メニュー台帳。作り方が書かれていないものを上に出して、埋めやすくする */
+    const menus = (state.data.menus || []).slice().sort(function (a, b) {
+      const ea = a['手順メモ'] ? 1 : 0, eb = b['手順メモ'] ? 1 : 0;
+      if (ea !== eb) return ea - eb;
+      return String(a['メニュー名']).localeCompare(String(b['メニュー名']), 'ja');
+    });
+    const noRecipe = menus.filter(function (m) { return !m['手順メモ']; }).length;
+
+    h += '<h2 class="section">メニュー台帳（' + menus.length + '）</h2>';
+    h += '<p class="hint">'
+      + (noRecipe ? '作り方が書かれていないものが' + noRecipe + '件あります。上から順に出しています。'
+                  : 'すべてに作り方が入っています。')
+      + '押すと材料と作り方が見られます。</p>';
+    h += '<div class="btn-row"><button class="btn" id="menu-new">メニューを足す</button></div>';
+    menus.forEach(function (m) {
+      h += '<div class="card"><div class="card-row"><div>'
+        + '<h3>' + esc(m['メニュー名']) + '</h3>'
+        + '<div class="meta">' + esc([m['区分'], m['時間帯'], m['調理器具']].filter(Boolean).join('・')) + '</div>'
+        + '</div>' + (m['手順メモ'] ? '' : '<span class="badge warn">作り方なし</span>') + '</div>'
+        + '<div class="btn-row"><button class="btn small" data-recipe="' + esc(m['id']) + '">見る・直す</button></div>'
+        + '</div>';
+    });
+
     h += '<h2 class="section">月予算</h2>'
       + '<label class="field">1か月の食費の目安<input type="number" id="s-budget" value="' + esc(String(configVal('月予算') || 60000)) + '"></label>'
       + '<div class="btn-row"><button class="btn" id="s-budget-save">保存</button></div>';
@@ -2422,6 +2539,11 @@ function renderSettings() {
   document.querySelectorAll('[data-voice]').forEach(function (b) {
     b.addEventListener('click', function () { editVoice(b.dataset.voice); });
   });
+  document.querySelectorAll('[data-recipe]').forEach(function (b) {
+    b.addEventListener('click', function () { menuDetail(b.dataset.recipe); });
+  });
+  const mn = document.getElementById('menu-new');
+  if (mn) mn.addEventListener('click', function () { freeMenu(null, null, null, null); });
   document.querySelectorAll('[data-img]').forEach(function (img) { loadImage(img); });
   const bb = document.getElementById('s-budget-save');
   if (bb) bb.addEventListener('click', async function () {
