@@ -43,7 +43,7 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
-/* ---------- 荳企Κ繝舌� ---------- */
+/* ---------- 上部バー ---------- */
 #topbar {
   position: sticky;
   top: 0;
@@ -67,7 +67,7 @@ html, body {
   font-family: inherit;
 }
 
-/* ---------- 譛ｬ菴� ---------- */
+/* ---------- 本体 ---------- */
 #view {
   padding: 16px 16px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 24px);
   max-width: 720px;
@@ -93,7 +93,7 @@ h2.section:first-child { margin-top: 4px; }
   border-radius: var(--radius);
 }
 
-/* ---------- 繧ｫ繝ｼ繝� ---------- */
+/* ---------- カード ---------- */
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -130,7 +130,7 @@ h2.section:first-child { margin-top: 4px; }
 }
 .alert.calm { background: var(--accent-soft); color: var(--accent); }
 
-/* ---------- 繝懊ち繝ｳ ---------- */
+/* ---------- ボタン ---------- */
 button { cursor: pointer; font-family: inherit; }
 .btn {
   border: 1px solid var(--line);
@@ -161,7 +161,7 @@ button { cursor: pointer; font-family: inherit; }
   font-weight: 700;
 }
 
-/* ---------- 蜈･蜉� ---------- */
+/* ---------- 入力 ---------- */
 label.field { display: block; margin: 14px 0 0; font-size: 14px; color: var(--ink-soft); }
 input[type="text"], input[type="url"], input[type="password"], input[type="number"],
 input[type="date"], select, textarea {
@@ -172,13 +172,13 @@ input[type="date"], select, textarea {
   border-radius: 10px;
   background: var(--card);
   color: var(--ink);
-  font-size: 16px; /* iOS縺ｧ諡｡螟ｧ縺輔ｌ縺ｪ縺�ｈ縺�↓16px莉･荳� */
+  font-size: 16px; /* iOSで拡大されないように16px以上 */
   font-family: inherit;
 }
 textarea { min-height: 90px; resize: vertical; }
 
-/* ---------- 迪ｮ遶九�陦ｨ ---------- */
-/* 繧ｹ繝槭�縺ｮ蟷�↓蜿弱∪繧九ｈ縺�∝�蟷�ｒ蝗ｺ螳壹＠縺ｦ譁�ｭ励ｒ蟆上＆繧√↓縺吶ｋ */
+/* ---------- 献立の表 ---------- */
+/* スマホの幅に収まるよう、列幅を固定して文字を小さめにする */
 table.grid {
   border-collapse: collapse;
   width: 100%;
@@ -225,7 +225,7 @@ col.c-asa  { width: 32px; }
 .cell.empty-cell { color: var(--ink-soft); text-align: center; }
 .cell.na { background: var(--bg); cursor: default; color: var(--ink-soft); text-align: center; }
 
-/* 逕ｻ髱｢縺悟ｺ�＞縺ｨ縺阪�隱ｭ縺ｿ繧�☆縺募━蜈医〒蟆代＠螟ｧ縺阪￥ */
+/* 画面が広いときは読みやすさ優先で少し大きく */
 @media (min-width: 520px) {
   col.c-date { width: 76px; }
   col.c-asa  { width: 56px; }
@@ -233,7 +233,7 @@ col.c-asa  { width: 32px; }
   .cell { padding: 9px 8px; }
 }
 
-/* ---------- 諢剰ｦ狗ｮｱ繝懊ち繝ｳ ---------- */
+/* ---------- 意見箱ボタン ---------- */
 .voice-btn {
   position: fixed;
   right: 14px;
@@ -248,7 +248,7 @@ col.c-asa  { width: 32px; }
   box-shadow: 0 3px 10px rgba(0,0,0,.08);
 }
 
-/* ---------- 荳九ち繝� ---------- */
+/* ---------- 下タブ ---------- */
 #tabbar {
   position: fixed;
   left: 0; right: 0; bottom: 0;
@@ -277,7 +277,7 @@ col.c-asa  { width: 32px; }
   background: var(--warn);
 }
 
-/* ---------- 繧ｷ繝ｼ繝茨ｼ医Δ繝ｼ繝繝ｫ�� ---------- */
+/* ---------- シート（モーダル） ---------- */
 .sheet { position: fixed; inset: 0; z-index: 40; }
 .sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.35); }
 .sheet-body {
@@ -310,7 +310,7 @@ col.c-asa  { width: 32px; }
 }
 .pick .meta { color: var(--ink-soft); font-size: 12px; }
 
-/* ---------- 繝医�繧ｹ繝� ---------- */
+/* ---------- トースト ---------- */
 .toast {
   position: fixed;
   left: 50%;
@@ -326,7 +326,7 @@ col.c-asa  { width: 32px; }
   text-align: center;
 }
 
-/* ---------- 鬟溯ｲｻ繝舌� ---------- */
+/* ---------- 食費バー ---------- */
 .bar { height: 12px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 8px 0 4px; }
 .bar > span { display: block; height: 100%; background: var(--free); }
 .bar.over > span { background: var(--warn); }
