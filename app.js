@@ -7,7 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
-const APP_VERSION = '2026-08-30-8';
+const APP_VERSION = '2026-08-30-10';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -120,6 +120,16 @@ function view(html) { document.getElementById('view').innerHTML = html; }
 /* 今日                                                                */
 /* ================================================================== */
 
+/* ---------- 保存期限の見かた ----------
+ * 古い「期限」列には食べる予定日が入っている行がある。
+ * 安全の判断には使わず、「保存期限」だけを見る。
+ * 「保存期限」が空で「期限」だけある行は、未確認として扱う。
+ */
+function useBy(s) { return String(s['保存期限'] || '').slice(0, 10); }
+function isExpired(s) { const u = useBy(s); return !!u && u < ymd(new Date()); }
+function isDueToday(s) { const u = useBy(s); return !!u && u === ymd(new Date()); }
+function limitUnknown(s) { return !useBy(s) && !!s['期限']; }
+
 function renderToday() {
   const d = state.data;
   const me = myMember();
@@ -130,19 +140,28 @@ function renderToday() {
   const todo = [];
   const dow = new Date().getDay(); // 0=日
 
-  const expiring = d.stock.filter(function (s) {
-    return num(s['残数']) > 0 && s['期限'] && String(s['期限']).slice(0, 10) <= today;
-  });
-  if (expiring.length) {
+  const live = d.stock.filter(function (s) { return num(s['残数']) > 0; });
+
+  const gone = live.filter(isExpired);
+  if (gone.length) {
     todo.push({
       warn: true,
-      text: '今日までに食べたいもの：' + expiring.map(function (s) { return s['名称']; }).join('、'),
+      text: '保存期限が過ぎています。食べずに処分してください：'
+        + gone.map(function (s) { return s['名称'] + '（' + shortDate(useBy(s)) + 'まで）'; }).join('、'),
     });
   }
 
-  const thaw = d.stock.filter(function (s) {
+  const dueToday = live.filter(isDueToday);
+  if (dueToday.length) {
+    todo.push({
+      warn: true,
+      text: '今日までに食べたいもの：' + dueToday.map(function (s) { return s['名称']; }).join('、'),
+    });
+  }
+
+  const thaw = live.filter(function (s) {
     return s['保存場所'] === '冷凍' && s['種別'] === '作り置き'
-      && String(s['期限']).slice(0, 10) === addDays(today, 1);
+      && String(s['食べる予定日']).slice(0, 10) === addDays(today, 1);
   });
   if (thaw.length) {
     todo.push({
@@ -167,6 +186,7 @@ function renderToday() {
     return num(s['残数']) > 0 && s['種別'] !== '市販BF';
   });
   const free = mine.filter(function (s) {
+    if (isExpired(s)) return false; // 期限切れは勧めない
     if (String(s['用途'] || '自由').indexOf('自由') !== 0) return false;
     // 誰かの取り置きは、その人以外の「どうぞ」に出さない
     const held = s['取り置き先'];
@@ -223,9 +243,11 @@ function stockCard(s, me, isReserved) {
   const mark = ngMark(me, s);
   const bits = [];
   if (s['保存場所']) bits.push(s['保存場所']);
-  if (s['期限']) bits.push(shortDate(s['期限']) + 'まで');
+  if (useBy(s)) bits.push(shortDate(useBy(s)) + 'まで');
+  else if (limitUnknown(s)) bits.push('保存期限は未確認');
+  if (s['食べる予定日']) bits.push(shortDate(s['食べる予定日']) + 'に食べる予定');
   if (num(s['残数']) > 1) bits.push('残り' + num(s['残数']));
-  if (isReserved && s['plan_id']) {
+  if (isReserved && s['plan_id'] && !s['食べる予定日']) {
     const p = byId(state.data.plan, s['plan_id']);
     if (p) bits.push(shortDate(p['日付']) + 'の' + p['食事区分']);
   }
@@ -240,7 +262,7 @@ function stockCard(s, me, isReserved) {
     + (bits.length ? '<div class="meta">' + esc(bits.join('・')) + '</div>' : '')
     + '</div>' + badge + '</div>'
     + '<div class="btn-row">'
-    + (isReserved
+    + (isReserved && !(me && String(s['取り置き先']) === String(me.id))
         ? '<button class="btn small" data-want="' + s['id'] + '">これ食べたい</button>'
         : '<button class="btn small" data-eat="' + s['id'] + '">食べた</button>')
     + '</div></div>';
@@ -270,11 +292,11 @@ function helpSection(me) {
   // 期限が近い野菜は、レコルトのポタージュにできる
   const soon = addDays(ymd(new Date()), 3);
   const veg = d.stock.filter(function (s) {
-    if (num(s['残数']) <= 0) return false;
+    if (num(s['残数']) <= 0 || isExpired(s)) return false;
     if (String(s['用途'] || '自由').indexOf('自由') !== 0) return false;
     const f = byKey(d.foods, '食材名', s['名称']);
     if (!f || f['栄養素分類'] !== 'ビタミン・ミネラル') return false;
-    return s['期限'] && String(s['期限']).slice(0, 10) <= soon;
+    return useBy(s) && useBy(s) <= soon;
   });
 
   if (!open.length && !quick.length && !veg.length) return h;
@@ -332,12 +354,18 @@ function babySummary() {
     + '</div>';
 }
 
+/**
+ * 残数は端末で計算せず、サーバーに「1つ食べた」とだけ伝える。
+ * 2人が同時に食べても、両方ぶん減る。
+ */
 async function eatStock(id) {
-  const s = byId(state.data.stock, id);
-  if (!s) return;
-  s['残数'] = Math.max(0, num(s['残数']) - 1);
-  await save('stock', [s]);
-  toast('食べた記録をつけました');
+  try {
+    const r = await api('consume', { stockId: id, n: 1 });
+    await reload();
+    toast('食べた記録をつけました（残り' + r['残数'] + '）');
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 async function wantStock(id) {
@@ -573,12 +601,7 @@ function bindPlanEvents(weeks) {
   document.querySelectorAll('[data-cook]').forEach(function (b) {
     b.addEventListener('click', function () {
       const w = b.dataset.cook.split('|');
-      const lunches = state.data.plan.filter(function (p) {
-        const day = String(p['日付']).slice(0, 10);
-        const dow = new Date(day + 'T00:00:00').getDay();
-        return day >= w[0] && day <= w[1] && p['食事区分'] === '昼' && dow !== 0 && dow !== 6 && p['状態'] !== '変更';
-      }).sort(function (a, b2) { return String(a['日付']).localeCompare(String(b2['日付'])); });
-      cookLunches(lunches);
+      cookLunches(w[0], w[1]);
     });
   });
 }
@@ -630,18 +653,28 @@ function pickMenu(day, slot) {
   document.querySelectorAll('[data-add]').forEach(function (b2) {
     b2.addEventListener('click', async function () {
       closeSheet();
-      // 差し替えのときは、先に入っているものを外す
-      if (replaceMode && existing.length) {
-        await api('remove', { sheet: 'plan', ids: existing.map(function (p) { return p['id']; }) });
+      try {
+        if (replaceMode) {
+          // 「外す」と「入れる」を分けると、途中で失敗して空になる。1回で入れ替える。
+          await api('replaceSlot', { date: day, slot: slot, menu_ids: [b2.dataset.add] });
+        } else {
+          const ids = existing.map(function (p) { return p['menu_id']; }).concat([b2.dataset.add]);
+          await api('replaceSlot', { date: day, slot: slot, menu_ids: ids });
+        }
+        await reload();
+        toast(replaceMode && existing.length ? '差し替えました' : '入れました');
+      } catch (err) {
+        toast('入れられませんでした：' + err.message);
       }
-      await save('plan', [{ 日付: day, 食事区分: slot, member_id: '', menu_id: b2.dataset.add, 状態: '予定' }]);
-      toast(replaceMode && existing.length ? '差し替えました' : '入れました');
     });
   });
   document.querySelectorAll('[data-del]').forEach(function (b2) {
     b2.addEventListener('click', async function () {
       closeSheet();
-      await api('remove', { sheet: 'plan', ids: [b2.dataset.del] });
+      const rest = existing
+        .filter(function (p) { return p['id'] !== b2.dataset.del; })
+        .map(function (p) { return p['menu_id']; });
+      await api('replaceSlot', { date: day, slot: slot, menu_ids: rest });
       await reload();
       toast('外しました');
     });
@@ -695,33 +728,38 @@ function freeMenu(day, slot, toReplace) {
       menu = saved[0];
     }
 
-    if (toReplace && toReplace.length) {
-      await api('remove', { sheet: 'plan', ids: toReplace.map(function (p) { return p['id']; }) });
-    }
-    await save('plan', [{ 日付: day, 食事区分: slot, member_id: '', menu_id: menu.id, 状態: '予定' }]);
+    const keep = (toReplace && toReplace.length)
+      ? []
+      : state.data.plan.filter(function (p) {
+          return String(p['日付']).slice(0, 10) === day && p['食事区分'] === slot && p['状態'] !== '変更';
+        }).map(function (p) { return p['menu_id']; });
+    await api('replaceSlot', { date: day, slot: slot, menu_ids: keep.concat([menu.id]) });
+    await reload();
     toast('「' + name + '」を入れました');
   });
 }
 
-async function cookLunches(lunches) {
-  const today = ymd(new Date());
-  const rows = lunches.map(function (p, i) {
-    const m = byId(state.data.menus, p['menu_id']) || {};
-    return {
-      名称: m['メニュー名'] || '',
-      種別: '作り置き',
-      作った日: today,
-      残数: 1,
-      保存場所: i < 2 ? 'パーシャル' : '冷凍',
-      期限: p['日付'],
-      用途: '予定あり',
-      plan_id: p['id'],
-      調理要否: '要調理',
-      取り置き先: p['member_id'] || '',
-    };
-  });
-  await save('stock', rows);
-  toast(rows.length + '食を在庫に入れました');
+/**
+ * 週末に作った昼の分を在庫に入れる。
+ *
+ * 保存場所と保存期限はサーバー側で決める（作った日から食べる日までの間隔と、
+ * メニューごとの日持ちを見る）。同じ予定にすでに作り置きがあれば作らないので、
+ * 二度押しや通信の再送でも二重にならない。
+ */
+async function cookLunches(from, to) {
+  try {
+    toast('在庫に入れています…');
+    const r = await api('cookLunches', { from: from, to: to, cookedOn: ymd(new Date()) });
+    await reload();
+    let msg = r['入れた件数'] + '食を在庫に入れました';
+    if (r['すでにあった件数']) msg += '（' + r['すでにあった件数'] + '食はすでに入っていました）';
+    toast(msg);
+    if (r['注意'] && r['注意'].length) {
+      alert('気をつけること\n\n' + r['注意'].join('\n'));
+    }
+  } catch (err) {
+    toast('入れられませんでした：' + err.message);
+  }
 }
 
 /* ================================================================== */
@@ -914,26 +952,16 @@ function shoppingMoney() {
   return h;
 }
 
+/** コープの注文を「到着」か「欠品」にする。在庫への反映もサーバー側でまとめて行う。 */
 async function arriveOrder(arg) {
   const parts = arg.split('|');
-  const o = byId(state.data.orders, parts[0]);
-  if (!o) return;
-  o['状態'] = parts[1];
-  const rows = [];
-  if (parts[1] === '到着') {
-    rows.push({
-      名称: o['商品名'], 種別: '生鮮', 作った日: ymd(new Date()),
-      残数: num(o['数量']) || 1, 保存場所: '冷蔵', 期限: '',
-      用途: '自由', plan_id: '', 調理要否: '要調理', 取り置き先: '',
-    });
+  try {
+    await api('arriveOrder', { orderId: parts[0], state: parts[1] });
+    await reload();
+    toast(parts[1] === '到着' ? '在庫に入れました' : 'スーパーの買い物リストに移しました');
+  } catch (err) {
+    toast('できませんでした：' + err.message);
   }
-  await api('upsert', { sheet: 'orders', rows: [o] });
-  if (rows.length) await api('upsert', { sheet: 'stock', rows: rows });
-  if (parts[1] === '欠品') {
-    await api('upsert', { sheet: 'shopping', rows: [{ 食材名: o['商品名'], 調達先: 'ライフ', 買った: '' }] });
-  }
-  await reload();
-  toast(parts[1] === '到着' ? '在庫に入れました' : 'スーパーの買い物リストに移しました');
 }
 
 function addExpense() {
