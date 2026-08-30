@@ -43,7 +43,7 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
-/* ---------- 上部バー ---------- */
+/* ---------- 荳企Κ繝舌� ---------- */
 #topbar {
   position: sticky;
   top: 0;
@@ -67,7 +67,7 @@ html, body {
   font-family: inherit;
 }
 
-/* ---------- 本体 ---------- */
+/* ---------- 譛ｬ菴� ---------- */
 #view {
   padding: 16px 16px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 24px);
   max-width: 720px;
@@ -93,7 +93,7 @@ h2.section:first-child { margin-top: 4px; }
   border-radius: var(--radius);
 }
 
-/* ---------- カード ---------- */
+/* ---------- 繧ｫ繝ｼ繝� ---------- */
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -130,7 +130,7 @@ h2.section:first-child { margin-top: 4px; }
 }
 .alert.calm { background: var(--accent-soft); color: var(--accent); }
 
-/* ---------- ボタン ---------- */
+/* ---------- 繝懊ち繝ｳ ---------- */
 button { cursor: pointer; font-family: inherit; }
 .btn {
   border: 1px solid var(--line);
@@ -161,7 +161,7 @@ button { cursor: pointer; font-family: inherit; }
   font-weight: 700;
 }
 
-/* ---------- 入力 ---------- */
+/* ---------- 蜈･蜉� ---------- */
 label.field { display: block; margin: 14px 0 0; font-size: 14px; color: var(--ink-soft); }
 input[type="text"], input[type="url"], input[type="password"], input[type="number"],
 input[type="date"], select, textarea {
@@ -172,43 +172,68 @@ input[type="date"], select, textarea {
   border-radius: 10px;
   background: var(--card);
   color: var(--ink);
-  font-size: 16px; /* iOSで拡大されないように16px以上 */
+  font-size: 16px; /* iOS縺ｧ諡｡螟ｧ縺輔ｌ縺ｪ縺�ｈ縺�↓16px莉･荳� */
   font-family: inherit;
 }
 textarea { min-height: 90px; resize: vertical; }
 
-/* ---------- 週グリッド ---------- */
-.week { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table.grid { border-collapse: collapse; width: 100%; min-width: 460px; }
+/* ---------- 迪ｮ遶九�陦ｨ ---------- */
+/* 繧ｹ繝槭�縺ｮ蟷�↓蜿弱∪繧九ｈ縺�∝�蟷�ｒ蝗ｺ螳壹＠縺ｦ譁�ｭ励ｒ蟆上＆繧√↓縺吶ｋ */
+table.grid {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
 table.grid th, table.grid td {
   border: 1px solid var(--line);
   padding: 0;
   vertical-align: top;
 }
-table.grid th {
+table.grid thead th {
   background: var(--card);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  padding: 8px 6px;
+  padding: 6px 2px;
+}
+table.grid tbody th {
+  background: var(--card);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 3px;
   white-space: nowrap;
 }
 table.grid td { background: var(--card); }
+table.grid tr.today th, table.grid tr.today td { background: var(--accent-soft); }
+
+col.c-date { width: 58px; }
+col.c-asa  { width: 32px; }
+
 .cell {
   display: block;
   width: 100%;
-  min-height: 54px;
+  min-height: 42px;
   border: 0;
   background: transparent;
   color: var(--ink);
   text-align: left;
-  padding: 8px;
-  font-size: 13px;
+  padding: 7px 5px;
+  font-size: 12px;
   line-height: 1.45;
+  font-family: inherit;
+  word-break: break-word;
 }
-.cell.empty-cell { color: var(--ink-soft); }
-.cell.na { background: var(--bg); cursor: default; }
+.cell.empty-cell { color: var(--ink-soft); text-align: center; }
+.cell.na { background: var(--bg); cursor: default; color: var(--ink-soft); text-align: center; }
 
-/* ---------- 意見箱ボタン ---------- */
+/* 逕ｻ髱｢縺悟ｺ�＞縺ｨ縺阪�隱ｭ縺ｿ繧�☆縺募━蜈医〒蟆代＠螟ｧ縺阪￥ */
+@media (min-width: 520px) {
+  col.c-date { width: 76px; }
+  col.c-asa  { width: 56px; }
+  .cell, table.grid thead th, table.grid tbody th { font-size: 13px; }
+  .cell { padding: 9px 8px; }
+}
+
+/* ---------- 諢剰ｦ狗ｮｱ繝懊ち繝ｳ ---------- */
 .voice-btn {
   position: fixed;
   right: 14px;
@@ -223,7 +248,7 @@ table.grid td { background: var(--card); }
   box-shadow: 0 3px 10px rgba(0,0,0,.08);
 }
 
-/* ---------- 下タブ ---------- */
+/* ---------- 荳九ち繝� ---------- */
 #tabbar {
   position: fixed;
   left: 0; right: 0; bottom: 0;
@@ -252,7 +277,7 @@ table.grid td { background: var(--card); }
   background: var(--warn);
 }
 
-/* ---------- シート（モーダル） ---------- */
+/* ---------- 繧ｷ繝ｼ繝茨ｼ医Δ繝ｼ繝繝ｫ�� ---------- */
 .sheet { position: fixed; inset: 0; z-index: 40; }
 .sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.35); }
 .sheet-body {
@@ -285,7 +310,7 @@ table.grid td { background: var(--card); }
 }
 .pick .meta { color: var(--ink-soft); font-size: 12px; }
 
-/* ---------- トースト ---------- */
+/* ---------- 繝医�繧ｹ繝� ---------- */
 .toast {
   position: fixed;
   left: 50%;
@@ -301,7 +326,7 @@ table.grid td { background: var(--card); }
   text-align: center;
 }
 
-/* ---------- 食費バー ---------- */
+/* ---------- 鬟溯ｲｻ繝舌� ---------- */
 .bar { height: 12px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 8px 0 4px; }
 .bar > span { display: block; height: 100%; background: var(--free); }
 .bar.over > span { background: var(--warn); }
