@@ -359,20 +359,77 @@ async function takeTask(id) {
 /* 計画                                                                */
 /* ================================================================== */
 
-function renderPlan() {
-  const d = state.data;
-  const start = weekStart(new Date()); // 土曜
-  const days = [];
-  for (let i = 0; i < 7; i++) days.push(addDays(start, i));
+/* 月の最終日 */
+function monthEnd(month) {
+  const y = Number(month.slice(0, 4)), m = Number(month.slice(5, 7));
+  return ymd(new Date(y, m, 0));
+}
 
-  let h = '<h2 class="section">今週の計画（' + shortDate(days[0]) + '〜' + shortDate(days[6]) + '）</h2>';
-  h += '<p class="hint">昼は平日だけ、朝と夜は毎日です。空いているところを押すとメニューを選べます。</p>';
-  h += '<div class="week"><table class="grid"><thead><tr><th></th>';
+/* その月にかかる週（土曜始まり）を、日付7つの配列の配列で返す */
+function weeksCovering(first, last) {
+  const weeks = [];
+  let s = weekStart(new Date(first + 'T00:00:00'));
+  while (s <= last) {
+    const days = [];
+    for (let i = 0; i < 7; i++) days.push(addDays(s, i));
+    weeks.push(days);
+    s = addDays(s, 7);
+  }
+  return weeks;
+}
+
+function renderPlan() {
+  const month = state.month || ymd(new Date()).slice(0, 7);
+  state.month = month;
+
+  const first = month + '-01';
+  const last = monthEnd(month);
+  const weeks = weeksCovering(first, last);
+  const today = ymd(new Date());
+
+  let h = '<div class="seg" style="margin-bottom:12px">'
+    + '<button id="prev-month" aria-label="前の月">←</button>'
+    + '<button aria-pressed="true">' + Number(month.slice(0, 4)) + '年' + Number(month.slice(5, 7)) + '月</button>'
+    + '<button id="next-month" aria-label="次の月">→</button>'
+    + '</div>';
+
+  h += '<div class="btn-row" style="margin-top:0">'
+    + '<button class="btn primary" id="suggest-month">1ヶ月分を自動で提案</button>'
+    + '<button class="btn" id="clear-month">この月を空にする</button>'
+    + '</div>';
+  h += '<p class="hint">まず自動で埋めて、気になるマスだけ押して差し替えてください。'
+    + '昼は平日だけ、朝と夜は毎日です。'
+    + '苦手な食材（×）を含むものと、前にNGにしたものは出てきません。</p>';
+
+  weeks.forEach(function (days) {
+    const isThisWeek = days[0] <= today && today <= days[6];
+    h += '<h2 class="section">' + shortDate(days[0]) + '〜' + shortDate(days[6])
+      + (isThisWeek ? ' <span class="badge reserved">今週</span>' : '') + '</h2>';
+    h += weekTable(days);
+    h += '<div class="btn-row">'
+      + '<button class="btn' + (isThisWeek ? ' primary' : '') + '" data-apply="' + days[0] + '|' + days[6] + '">この週を在庫に反映</button>'
+      + '<button class="btn" data-shop="' + days[0] + '|' + days[6] + '">この週の買い物リスト</button>'
+      + '</div>';
+    h += lunchSheet(days);
+  });
+
+  h += '<p class="hint">「この週を在庫に反映」を押すと、その週の献立で使う主役の食材（肉・魚・卵・豆腐など）が'
+    + '「予定あり」になり、それ以外は「どうぞ」のまま残ります。野菜を少し使っても計画は崩れないためです。'
+    + '<br>在庫の予約は週ごとです。1ヶ月分をまとめて予約すると、家族が使えるものが無くなってしまうためです。</p>';
+
+  view(h);
+  bindPlanEvents(weeks);
+}
+
+/* 1週間分の表 */
+function weekTable(days) {
+  const d = state.data;
+  let h = '<div class="week"><table class="grid"><thead><tr><th></th>';
   SLOTS.forEach(function (s) { h += '<th>' + s + '</th>'; });
   h += '</tr></thead><tbody>';
 
   days.forEach(function (day) {
-    const dow = new Date(day + 'T00:00:00+09:00').getDay();
+    const dow = new Date(day + 'T00:00:00').getDay();
     const weekend = (dow === 0 || dow === 6);
     h += '<tr><th>' + shortDate(day) + '(' + WEEK_LABEL[dow] + ')</th>';
     SLOTS.forEach(function (slot) {
@@ -391,53 +448,85 @@ function renderPlan() {
     });
     h += '</tr>';
   });
-  h += '</tbody></table></div>';
+  return h + '</tbody></table></div>';
+}
 
-  h += '<div class="btn-row">'
-    + '<button class="btn primary" id="apply-plan">献立を確定して在庫に反映</button>'
-    + '<button class="btn" id="build-shopping">買い物リストを作る</button>'
-    + '</div>';
-  h += '<p class="hint">確定すると、献立で使う主役の食材（肉・魚・卵・豆腐など）が「予定あり」になり、'
-    + 'それ以外は「どうぞ」のまま残ります。野菜を少し使っても計画は崩れないためです。</p>';
-
-  /* 平日昼のオーブン一括調理 */
+/* その週の平日昼5食を、オーブンでまとめて作るための一覧 */
+function lunchSheet(days) {
+  const d = state.data;
   const lunches = [];
   days.forEach(function (day) {
-    const dow = new Date(day + 'T00:00:00+09:00').getDay();
+    const dow = new Date(day + 'T00:00:00').getDay();
     if (dow === 0 || dow === 6) return;
     d.plan.forEach(function (p) {
       if (String(p['日付']).slice(0, 10) === day && p['食事区分'] === '昼' && p['状態'] !== '変更') lunches.push(p);
     });
   });
+  if (!lunches.length) return '';
 
-  h += '<h2 class="section">週末のオーブン一括調理</h2>';
-  if (!lunches.length) {
-    h += '<div class="empty">平日昼の献立を入れると、ここに5食分の割り当てが出ます。</div>';
-  } else {
-    h += '<p class="hint">1食ずつ耐熱ガラス容器に入れて200℃。月・火はパーシャル、水〜金は冷凍にします。</p>';
-    lunches.forEach(function (p, i) {
-      const m = byId(d.menus, p['menu_id']) || {};
-      h += '<div class="card"><div class="card-row"><div>'
-        + '<h3>' + shortDate(p['日付']) + '　' + esc(m['メニュー名'] || '') + '</h3>'
-        + '<div class="meta">' + esc(splitList(m['材料']).join('・')) + '</div>'
-        + (m['手順メモ'] ? '<div class="meta">' + esc(m['手順メモ']) + '</div>' : '')
-        + '</div><span class="badge ' + (i < 2 ? 'plain' : 'reserved') + '">' + (i < 2 ? 'パーシャル' : '冷凍') + '</span>'
-        + '</div></div>';
-    });
-    const groups = {};
-    lunches.forEach(function (p) {
-      const m = byId(d.menus, p['menu_id']) || {};
-      if (m['共通グループ']) (groups[m['共通グループ']] = groups[m['共通グループ']] || []).push(m['メニュー名']);
-    });
-    Object.keys(groups).forEach(function (g) {
-      if (groups[g].length > 1) {
-        h += '<div class="note">' + esc(groups[g].join('と')) + ' は同じ' + esc(g) + 'を使えます。まとめて作ると楽です。</div>';
-      }
-    });
-    h += '<div class="btn-row"><button class="btn" id="cook-lunch">作ったので在庫に入れる</button></div>';
-  }
+  let h = '<p class="hint">この週の昼は、週末に1食ずつ耐熱ガラス容器に入れて200℃。'
+    + '月・火はパーシャル、水〜金は冷凍にします。</p>';
+  lunches.forEach(function (p, i) {
+    const m = byId(d.menus, p['menu_id']) || {};
+    h += '<div class="card"><div class="card-row"><div>'
+      + '<h3>' + shortDate(p['日付']) + '　' + esc(m['メニュー名'] || '') + '</h3>'
+      + '<div class="meta">' + esc(splitList(m['材料']).join('・')) + '</div>'
+      + '</div><span class="badge ' + (i < 2 ? 'plain' : 'reserved') + '">' + (i < 2 ? 'パーシャル' : '冷凍') + '</span>'
+      + '</div></div>';
+  });
 
-  view(h);
+  const groups = {};
+  lunches.forEach(function (p) {
+    const m = byId(d.menus, p['menu_id']) || {};
+    if (m['共通グループ']) (groups[m['共通グループ']] = groups[m['共通グループ']] || []).push(m['メニュー名']);
+  });
+  Object.keys(groups).forEach(function (g) {
+    if (groups[g].length > 1) {
+      h += '<div class="note">' + esc(groups[g].join('と')) + ' は同じ' + esc(g) + 'を使えます。まとめて作ると楽です。</div>';
+    }
+  });
+
+  h += '<div class="btn-row"><button class="btn" data-cook="' + days[0] + '|' + days[6] + '">作ったので在庫に入れる</button></div>';
+  return h;
+}
+
+function bindPlanEvents(weeks) {
+  const month = state.month;
+  const first = month + '-01';
+  const last = monthEnd(month);
+  const from = weeks[0][0];
+  const to = weeks[weeks.length - 1][6];
+
+  document.getElementById('prev-month').addEventListener('click', function () {
+    state.month = addMonths(first, -1).slice(0, 7);
+    render();
+  });
+  document.getElementById('next-month').addEventListener('click', function () {
+    state.month = addMonths(first, 1).slice(0, 7);
+    render();
+  });
+
+  const sm = document.getElementById('suggest-month');
+  sm.addEventListener('click', async function () {
+    sm.disabled = true;
+    toast('1ヶ月分の献立を組んでいます…');
+    try {
+      const r = await api('suggestWeek', { from: from, to: to });
+      await reload();
+      toast(r['入れた件数'] + '件を入れました。気になるマスを押すと差し替えられます');
+    } catch (err) {
+      toast('提案できませんでした：' + err.message);
+    } finally {
+      sm.disabled = false;
+    }
+  });
+
+  document.getElementById('clear-month').addEventListener('click', async function () {
+    if (!confirm(Number(month.slice(5, 7)) + '月の献立をすべて消します。よろしいですか？')) return;
+    await api('clearWeek', { from: from, to: to });
+    await reload();
+    toast('空にしました');
+  });
 
   document.querySelectorAll('[data-cell]').forEach(function (b) {
     b.addEventListener('click', function () {
@@ -445,22 +534,35 @@ function renderPlan() {
       pickMenu(parts[0], parts[1]);
     });
   });
-  const ap = document.getElementById('apply-plan');
-  if (ap) ap.addEventListener('click', async function () {
-    await api('applyPlan', { from: days[0], to: days[6] });
-    await reload();
-    toast('在庫の「どうぞ／予定あり」を更新しました');
+  document.querySelectorAll('[data-apply]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      const w = b.dataset.apply.split('|');
+      await api('applyPlan', { from: w[0], to: w[1] });
+      await reload();
+      toast('この週の「どうぞ／予定あり」を更新しました');
+    });
   });
-  const bs = document.getElementById('build-shopping');
-  if (bs) bs.addEventListener('click', async function () {
-    await api('buildShopping', { from: days[0], to: days[6] });
-    await reload();
-    state.shopTab = 'list';
-    go('shopping');
-    toast('買い物リストを作りました');
+  document.querySelectorAll('[data-shop]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      const w = b.dataset.shop.split('|');
+      await api('buildShopping', { from: w[0], to: w[1] });
+      await reload();
+      state.shopTab = 'list';
+      go('shopping');
+      toast('買い物リストを作りました');
+    });
   });
-  const cl = document.getElementById('cook-lunch');
-  if (cl) cl.addEventListener('click', function () { cookLunches(lunches); });
+  document.querySelectorAll('[data-cook]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const w = b.dataset.cook.split('|');
+      const lunches = state.data.plan.filter(function (p) {
+        const day = String(p['日付']).slice(0, 10);
+        const dow = new Date(day + 'T00:00:00').getDay();
+        return day >= w[0] && day <= w[1] && p['食事区分'] === '昼' && dow !== 0 && dow !== 6 && p['状態'] !== '変更';
+      }).sort(function (a, b2) { return String(a['日付']).localeCompare(String(b2['日付'])); });
+      cookLunches(lunches);
+    });
+  });
 }
 
 function pickMenu(day, slot) {
