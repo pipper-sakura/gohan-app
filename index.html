@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#faf6f0">
+<title>ごはん台帳</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div id="topbar-title">ごはん台帳</div>
+  <button id="whoami" class="whoami" type="button">わたし</button>
+</header>
+
+<main id="view" aria-live="polite">
+  <div class="loading">読み込み中…</div>
+</main>
+
+<button id="voice-btn" class="voice-btn" type="button" title="ひとこと">ひとこと</button>
+
+<nav id="tabbar">
+  <button data-tab="today"    class="tab active" type="button"><span>今日</span></button>
+  <button data-tab="plan"     class="tab" type="button"><span>計画</span></button>
+  <button data-tab="shopping" class="tab" type="button"><span>買い物</span></button>
+  <button data-tab="baby"     class="tab" type="button"><span>離乳食</span></button>
+  <button data-tab="settings" class="tab" type="button"><span>設定</span></button>
+</nav>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-body" role="dialog" aria-modal="true">
+    <div class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button class="sheet-close" type="button" data-close aria-label="閉じる">×</button>
+    </div>
+    <div id="sheet-content"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
