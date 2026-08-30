@@ -1,5 +1,6 @@
 /* 画面のファイルだけキャッシュする。データはキャッシュしない（app.js側で前回分を保持している） */
-const CACHE = 'gohan-v2';
+const PREFIX = 'gohan-';
+const CACHE = PREFIX + 'v3';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.json',
                'icons/icon-192.png', 'icons/icon-512.png'];
 
@@ -10,7 +11,10 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // 同じドメインに別のアプリを置くことがあるので、このアプリの分だけ消す
+      .then((keys) => Promise.all(
+        keys.filter((k) => k.startsWith(PREFIX) && k !== CACHE).map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });
@@ -25,10 +29,19 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     fetch(new Request(req.url, { cache: 'no-cache' }))
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy));
+        // 404などを保存すると、正常なキャッシュを壊してしまう
+        if (res && res.ok && res.type === 'basic') {
+          const copy = res.clone();
+          e.waitUntil(caches.open(CACHE).then((c) => c.put(req, copy)));
+        }
         return res;
       })
-      .catch(() => caches.match(req).then((r) => r || caches.match('index.html')))
+      .catch(() => caches.match(req).then((r) => {
+        if (r) return r;
+        // 画面を開く要求のときだけ index.html を代わりに返す。
+        // CSSやJavaScriptの代わりにHTMLを返すと、かえって壊れる。
+        if (req.mode === 'navigate') return caches.match('index.html');
+        return Response.error();
+      }))
   );
 });
