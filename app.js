@@ -898,13 +898,24 @@ function renderCookSheet() {
   const partial = items.filter(function (it) { return it.place === 'パーシャル'; });
   const frozen = items.filter(function (it) { return it.place === '冷凍'; });
   h += step(5, '粗熱をとって保存',
-    '<div class="kv"><span class="k">パーシャル室へ</span><span>'
-      + esc(partial.map(function (it) { return shortDate(it.eatOn); }).join('・') || 'なし') + '</span></div>'
-    + '<div class="kv"><span class="k">冷凍庫へ</span><span>'
-      + esc(frozen.map(function (it) { return shortDate(it.eatOn); }).join('・') || 'なし') + '</span></div>'
+    items.map(function (it) {
+      const gap = daysBetween(today, it.eatOn);
+      const limit = num(it.menu['日持ちパーシャル']) || 3;
+      const dow = new Date(it.eatOn + 'T00:00:00').getDay();
+      return '<div class="kv"><span class="k">'
+        + shortDate(it.eatOn) + '(' + WEEK_LABEL[dow] + ')　' + esc(it.menu['メニュー名'] || '') + '</span>'
+        + '<span><b>' + it.place + '</b>　'
+        + (it.place === 'パーシャル'
+            ? gap + '日後（パーシャルは' + limit + '日まで）'
+            : gap + '日後（パーシャルの' + limit + '日を超える）')
+        + '</span></div>';
+    }).join('')
     + '<div class="note">焼き上がったら長く室温に置かず、粗熱がとれたらすぐ入れてください。'
-      + '冷凍にした分は、食べる前日の夜に冷蔵庫へ移します（「今日」タブに出ます）。</div>',
-    '食べる日から自動で決めています');
+      + '冷凍にした分は、食べる前日の夜に冷蔵庫へ移します（「今日」タブに出ます）。'
+      + '<br><br>パーシャルにする日数は、メニュー台帳の「日持ちパーシャル」で決まります。'
+      + 'もっと早めに冷凍したいときは、その数を小さくしてください。'
+      + '日持ちは目安です。怪しいと感じたら食べずに処分してください。</div>',
+    '食べる日までの日数と、メニューごとの日持ちで決めています');
 
   /* --- 6. 在庫に入れる --- */
   h += step(6, '在庫に入れる',
