@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f7f3e9">
+<title>離乳食の見本｜ごはん台帳</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="theme-doodle.css">
+<style>
+  #pv-note {
+    max-width: 720px; margin: 0 auto; padding: 14px 16px 0;
+    font-size: 13px; line-height: 1.8;
+  }
+  #pv-note .card { margin-bottom: 0; }
+  #pv-note ul { margin: .5rem 0 0; padding-left: 1.2rem; }
+  #pv-note li { margin: .15rem 0; }
+</style>
+</head>
+<body>
+
+<header id="topbar">
+  <div id="topbar-title">ごはん台帳（見本）</div>
+  <button id="whoami" class="whoami" type="button">桜子</button>
+</header>
+
+<div id="pv-note">
+  <div class="card">
+    <h3>これは見本です</h3>
+    <div class="meta">架空のデータで、本番と同じ画面を動かしています。通信も保存もしません。</div>
+    <div class="meta" style="margin-top:8px">下の画面に、依頼された機能が入っているか確かめられます。</div>
+    <ul>
+      <li>日付を ← → で移動（8/27 に記録が入っています）</li>
+      <li>月齢と段階（生後8か月7日・中期）</li>
+      <li>朝・昼・夕・おやつ ごとの記録</li>
+      <li>材料ごとの 食材／量／単位 と 栄養素バッジ（炭・ビ・タ）</li>
+      <li>「はじめて」バッジ</li>
+      <li>食べた量（予定・拒否・少し・半分・完食）と 機嫌</li>
+      <li>参考にしたレシピのリンク／メモ</li>
+      <li>栄養バランスの円グラフ（重さの割合）と ミルクml</li>
+      <li>市販ベビーフードのストックと「これをあげた」</li>
+      <li>食べた記録（初回と直近を別々に）</li>
+      <li>はじめての食材（その時期に食べられるもの・記号と形状）</li>
+      <li>気をつける食材／記号の見方</li>
+    </ul>
+    <div class="btn-row"><button class="btn small" id="pv-open">記録の入力画面を見る</button></div>
+  </div>
+</div>
+
+<main id="view" aria-live="polite"></main>
+
+<button id="voice-btn" class="voice-btn" type="button" title="ひとこと">ひとこと</button>
+
+<nav id="tabbar">
+  <button data-tab="today"    class="tab" type="button"><span>今日</span></button>
+  <button data-tab="plan"     class="tab" type="button"><span>計画</span></button>
+  <button data-tab="shopping" class="tab" type="button"><span>買い物</span></button>
+  <button data-tab="baby"     class="tab active" type="button"><span>離乳食</span></button>
+  <button data-tab="settings" class="tab" type="button"><span>設定</span></button>
+</nav>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-body" role="dialog" aria-modal="true">
+    <div class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button class="sheet-close" type="button" data-close aria-label="閉じる">×</button>
+    </div>
+    <div id="sheet-content"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+<script>
+/* 見本専用。通信も保存もしないよう、APIを差し替える。 */
+document.addEventListener('DOMContentLoaded', function () {
+  api = async function () { toast('見本なので保存しません'); return {}; };
+  reload = async function () { render(); };
+
+  const D = '2026-08-27';   // 記録が入っている日
+
+  function bf(name, big, small, marks) {
+    return {
+      食材名: name, 大分類: big, 小分類: small,
+      '5-6': marks[0], '5-6形状': marks[1],
+      '7-8': marks[2], '7-8形状': marks[3],
+      '9-11': marks[4], '9-11形状': marks[5],
+      '12-18': marks[6], '12-18形状': marks[7],
+      初めて食べた日: marks[8] || '', メモ: '',
+    };
+  }
+
+  state.data = {
+    members: [
+      { id: 'm2', 名前: '桜子', 区分: '大人', 誕生日: '', 役割: '' },
+      { id: 'm4', 名前: '赤ちゃん', 区分: '乳児', 誕生日: '2025-12-20', 役割: '記録対象' },
+    ],
+    prefs: [], menus: [], foods: [], plan: [], tasks: [],
+    shopping: [], orders: [], expenses: [], feedback: [], voices: [], config: [],
+
+    baby_log: [
+      { id: 'b1', 日付: D, 食事区分: '朝', メニュー名: '10倍がゆ',
+        参考URL: '', 材料: JSON.stringify([{ 食材: '米', 量: 30, 単位: 'g' }]),
+        はじめて食材: '', 食べた量: '完食', 機嫌: 'ごきげん', メモ: '', ミルクml: '' },
+
+      { id: 'b2', 日付: D, 食事区分: '昼', メニュー名: '鮭ペーストのパンがゆ',
+        参考URL: 'https://kosodate.pal-system.co.jp/',
+        材料: JSON.stringify([
+          { 食材: '食パン', 量: 20, 単位: 'g' },
+          { 食材: '牛乳', 量: 45, 単位: 'g' },
+          { 食材: '鮭', 量: 10, 単位: 'g' },
+        ]),
+        はじめて食材: '', 食べた量: '完食', 機嫌: 'ごきげん',
+        メモ: '鮭は嫌いだけどパンへの愛が勝った。', ミルクml: '' },
+
+      { id: 'b3', 日付: D, 食事区分: '昼', メニュー名: '白菜とトマトのスープ',
+        参考URL: '',
+        材料: JSON.stringify([
+          { 食材: '白菜', 量: 10, 単位: 'g' },
+          { 食材: 'トマト', 量: 15, 単位: 'g' },
+          { 食材: 'だし汁', 量: 1, 単位: '大さじ' },
+        ]),
+        はじめて食材: '白菜', 食べた量: '完食', 機嫌: 'ごきげん', メモ: '', ミルクml: '' },
+
+      { id: 'b4', 日付: D, 食事区分: '夕', メニュー名: 'にんじんのすりつぶし',
+        参考URL: '', 材料: JSON.stringify([{ 食材: 'にんじん', 量: 20, 単位: 'g' }]),
+        はじめて食材: '', 食べた量: '半分', 機嫌: 'ふつう', メモ: '', ミルクml: '' },
+
+      { id: 'b5', 日付: D, 食事区分: 'おやつ', メニュー名: '桃ヨーグルト',
+        参考URL: '', 材料: JSON.stringify([
+          { 食材: '桃', 量: 19, 単位: 'g' },
+          { 食材: 'プレーンヨーグルト', 量: 25, 単位: 'g' },
+        ]),
+        はじめて食材: '', 食べた量: '完食', 機嫌: 'ごきげん', メモ: '', ミルクml: 120 },
+
+      // 予定・拒否は実食に数えない例
+      { id: 'b6', 日付: '2026-08-26', 食事区分: '昼', メニュー名: 'うどん',
+        参考URL: '', 材料: JSON.stringify([{ 食材: 'うどん', 量: 20, 単位: 'g' }]),
+        はじめて食材: '', 食べた量: '拒否', 機嫌: 'ぐずり', メモ: '口から出した', ミルクml: '' },
+
+      // 卵：初回と直近が別々に出る例
+      { id: 'b7', 日付: '2026-07-01', 食事区分: '朝', メニュー名: '卵黄ペースト',
+        参考URL: '', 材料: JSON.stringify([{ 食材: '卵', 量: 5, 単位: 'g' }]),
+        はじめて食材: '卵', 食べた量: '完食', 機嫌: 'ごきげん', メモ: '', ミルクml: '' },
+      { id: 'b8', 日付: '2026-08-20', 食事区分: '朝', メニュー名: '卵黄がゆ',
+        参考URL: '', 材料: JSON.stringify([{ 食材: '卵', 量: 8, 単位: 'g' }]),
+        はじめて食材: '', 食べた量: '完食', 機嫌: 'ふつう', メモ: '', ミルクml: '' },
+    ],
+
+    baby_foods: [
+      bf('米', '炭水化物', '穀類', ['○', '10倍がゆ', '○', '7倍がゆ', '○', '5倍がゆ', '○', '軟飯', '2026-06-01']),
+      bf('食パン', '炭水化物', 'パン・シリアル類', ['○', 'すりつぶす', '○', 'こまかくする', '○', '小さくちぎる', '○', 'スティック状', '2026-07-20']),
+      bf('うどん', '炭水化物', 'めん類', ['○', 'すりつぶす', '○', 'みじん切り', '○', '1cm長さ', '○', '2cm長さ', '']),
+      bf('にんじん', 'ビタミン・ミネラル', '野菜', ['○', 'すりつぶす', '○', 'みじん切り', '○', '粗みじん切り', '○', '7mm角〜1cm', '2026-06-10']),
+      bf('白菜', 'ビタミン・ミネラル', '野菜', ['○', 'すりつぶす', '○', 'みじん切り', '○', '粗みじん切り', '○', '5mmサイズ', D]),
+      bf('トマト', 'ビタミン・ミネラル', '野菜', ['○', 'すりつぶす', '○', 'みじん切り', '○', '粗みじん切り', '○', '7mm角〜1cm', '2026-07-05']),
+      bf('ブロッコリー', 'ビタミン・ミネラル', '野菜', ['○', 'すりつぶす', '○', 'みじん切り', '○', '粗みじん切り', '○', '小房', '']),
+      bf('かぼちゃ', 'ビタミン・ミネラル', '野菜', ['○', 'すりつぶす', '○', 'みじん切り', '○', '粗みじん切り', '○', '7mm角〜1cm', '']),
+      bf('桃', 'ビタミン・ミネラル', '果物', ['○', 'すりつぶす', '○', '粗みじん切り', '○', '5mm角', '○', '1cm角', '2026-08-01']),
+      bf('鮭', 'タンパク質', '魚介類・魚介加工品', ['×1', '', '○', 'こまかくほぐす', '○', '粗くほぐす', '○', '1cmサイズ', '2026-08-05']),
+      bf('卵', 'タンパク質', '卵・乳製品', ['○', '黄身は裏ごし（白身は×2）', '○', 'すりつぶす', '○', '粗みじん切り', '○', '1cm角', '2026-07-01']),
+      bf('牛乳', 'タンパク質', '卵・乳製品', ['△1', '加熱調理なら', '△1', '加熱調理なら', '△1', '加熱調理なら', '○', 'そのまま', '2026-06-15']),
+      bf('プレーンヨーグルト', 'タンパク質', '卵・乳製品', ['○', 'そのまま', '○', 'そのまま', '○', 'そのまま', '○', 'そのまま', '2026-07-10']),
+      bf('豆腐', 'タンパク質', '豆類・豆加工品など', ['○', 'すりつぶす', '○', '5mm角', '○', '7mm角', '○', '1cm角', '']),
+      bf('しらす干し', 'タンパク質', '魚介類・魚介加工品', ['○', 'すりつぶす', '○', 'みじん切り', '○', '粗みじん切り', '○', 'そのまま', '']),
+    ],
+
+    baby_legend: [
+      { 記号: '○', 意味: 'その時期に合ったやわらかさや大きさに調理すれば食べられる' },
+      { 記号: '△1', 意味: '食べさせる量に注意すれば食べられるもの' },
+      { 記号: '×1', 意味: '消化しにくく、胃腸に負担がかかるもの' },
+    ],
+    baby_ng: [
+      { 区分: '離乳食期に与えられない', 食材: 'もち、クロワッサン、ベーグル、カマンベールチーズ、魚肉ソーセージ、いか、たこ、エリンギ、こんにゃく、しらたき、ナッツ類など' },
+      { 区分: '1歳未満に与えない', 食材: 'はちみつ、黒糖' },
+      { 区分: '3才未満に与えない', 食材: 'ぎんなん' },
+    ],
+
+    stock: [
+      { id: 'bf1', 名称: '野菜スープ 7か月から', 種別: '市販BF', 作った日: '2026-08-01',
+        残数: 4, 保存場所: '常温', 期限: '2026-09-05', 用途: '自由', plan_id: '',
+        調理要否: 'そのまま食べられる', 取り置き先: 'm4', メモ: '7か月から',
+        食べる予定日: '', 保存期限: '', 調理ロット: '' },
+      { id: 'bf2', 名称: 'しらすと野菜のおかゆ 9か月から', 種別: '市販BF', 作った日: '2026-08-10',
+        残数: 2, 保存場所: '常温', 期限: '2027-02-01', 用途: '自由', plan_id: '',
+        調理要否: 'そのまま食べられる', 取り置き先: 'm4', メモ: '9か月から',
+        食べる予定日: '', 保存期限: '', 調理ロット: '' },
+    ],
+  };
+
+  cfg.me = 'm2';
+  state.babyDate = D;
+  paintMe();
+  go('baby');
+
+  document.getElementById('pv-open').addEventListener('click', function () { editBabyLog('b2'); });
+});
+</script>
+</body>
+</html>
