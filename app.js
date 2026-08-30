@@ -7,7 +7,7 @@
  * その端末の localStorage にだけ残る。リポジトリには秘密情報を置かない。
  */
 
-const APP_VERSION = '2026-08-30-5';
+const APP_VERSION = '2026-08-30-8';
 const CFG_KEY = 'gohan.config';
 const SLOTS = ['朝', '昼', '夜'];
 const WEEK_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
@@ -162,9 +162,16 @@ function renderToday() {
   }
 
   /* --- あるもの：どうぞ --- */
-  const mine = d.stock.filter(function (s) { return num(s['残数']) > 0; });
+  // 市販ベビーフードは離乳食タブで扱うので、大人の一覧には出さない
+  const mine = d.stock.filter(function (s) {
+    return num(s['残数']) > 0 && s['種別'] !== '市販BF';
+  });
   const free = mine.filter(function (s) {
-    return String(s['用途'] || '自由').indexOf('自由') === 0 && ngMark(me, s) !== '×';
+    if (String(s['用途'] || '自由').indexOf('自由') !== 0) return false;
+    // 誰かの取り置きは、その人以外の「どうぞ」に出さない
+    const held = s['取り置き先'];
+    if (held && me && String(held) !== String(me.id)) return false;
+    return ngMark(me, s) !== '×';
   });
   const readyNow = free.filter(function (s) { return s['調理要否'] === 'そのまま食べられる'; });
   const needCook = free.filter(function (s) { return s['調理要否'] !== 'そのまま食べられる'; });
@@ -502,8 +509,10 @@ function bindPlanEvents(weeks) {
   const month = state.month;
   const first = month + '-01';
   const last = monthEnd(month);
-  const from = weeks[0][0];
-  const to = weeks[weeks.length - 1][6];
+  // 表示は週単位でまたぐが、変更の対象はその月の中だけに限る。
+  // weeks の端を使うと、9月を空にしたつもりで8月末や10月頭まで消えてしまう。
+  const from = first;
+  const to = last;
 
   document.getElementById('prev-month').addEventListener('click', function () {
     state.month = addMonths(first, -1).slice(0, 7);
@@ -521,7 +530,7 @@ function bindPlanEvents(weeks) {
     try {
       const r = await api('suggestWeek', { from: from, to: to });
       await reload();
-      toast(r['入れた件数'] + '件を入れました。気になるマスを押すと差し替えられます');
+      toast(Number(month.slice(5, 7)) + '月に' + r['入れた件数'] + '件を入れました。マスを押すと差し替えられます');
     } catch (err) {
       toast('提案できませんでした：' + err.message);
     } finally {
@@ -530,7 +539,8 @@ function bindPlanEvents(weeks) {
   });
 
   document.getElementById('clear-month').addEventListener('click', async function () {
-    if (!confirm(Number(month.slice(5, 7)) + '月の献立をすべて消します。よろしいですか？')) return;
+    if (!confirm(Number(month.slice(5, 7)) + '月（' + shortDate(from) + '〜' + shortDate(to)
+      + '）の献立をすべて消します。前後の月はそのままです。よろしいですか？')) return;
     await api('clearWeek', { from: from, to: to });
     await reload();
     toast('空にしました');
@@ -606,6 +616,10 @@ function pickMenu(day, slot) {
         : '追加する')
     + '</p>';
 
+  // 一覧に無いものは、その場で書いて入れられるようにする
+  h += '<button class="pick" id="pick-free"><b>自分で書いて入れる</b>'
+    + '<div class="meta">一覧に無いものを、その場で足します</div></button>';
+
   list.forEach(function (m) {
     h += '<button class="pick" data-add="' + m['id'] + '">' + esc(m['メニュー名'])
       + '<div class="meta">' + esc([m['区分'], m['調理器具'], m['調理時間'] ? m['調理時間'] + '分' : ''].filter(Boolean).join('・')) + '</div></button>';
@@ -631,6 +645,61 @@ function pickMenu(day, slot) {
       await reload();
       toast('外しました');
     });
+  });
+
+  document.getElementById('pick-free').addEventListener('click', function () {
+    freeMenu(day, slot, replaceMode ? existing : []);
+  });
+}
+
+/**
+ * 一覧に無い献立を、その場で書いて入れる。
+ * 書いたものはメニュー台帳にも残るので、次からは一覧から選べる。
+ */
+function freeMenu(day, slot, toReplace) {
+  const dow = new Date(day + 'T00:00:00').getDay();
+  openSheet(shortDate(day) + '(' + WEEK_LABEL[dow] + ') の' + slot + '　自分で書く',
+    '<label class="field">つくるもの<input type="text" id="fm-name" placeholder="肉じゃが、余りもので炒めもの など"></label>'
+    + '<label class="field">区分<select id="fm-kind">'
+      + ['主菜', '副菜', '汁物', 'その他'].map(function (k) { return '<option>' + k + '</option>'; }).join('')
+      + '</select></label>'
+    + '<label class="field">使う食材（任意・「、」で区切る）'
+      + '<input type="text" id="fm-mat" list="fm-foods" placeholder="豚ロース、じゃがいも"></label>'
+    + '<datalist id="fm-foods">'
+      + (state.data.foods || []).map(function (f) { return '<option value="' + esc(f['食材名']) + '">'; }).join('')
+      + '</datalist>'
+    + '<label class="field">だいたいの調理時間（分・任意）<input type="number" id="fm-min" inputmode="numeric"></label>'
+    + '<p class="hint">食材を書いておくと、買い物リストと「どうぞ／予定あり」の判定に使われます。'
+      + 'あとから「計画」で選べるようにもなります。</p>'
+    + '<div class="btn-row"><button class="btn primary" id="fm-save">入れる</button></div>');
+
+  document.getElementById('fm-save').addEventListener('click', async function () {
+    const name = document.getElementById('fm-name').value.trim();
+    if (!name) return toast('つくるものを書いてください');
+    closeSheet();
+
+    // 同じ名前がすでにあれば、それを使い回す
+    let menu = byKey(state.data.menus, 'メニュー名', name);
+    if (!menu) {
+      const saved = await api('upsert', { sheet: 'menus', rows: [{
+        メニュー名: name,
+        区分: document.getElementById('fm-kind').value,
+        時間帯: '両方',
+        材料: document.getElementById('fm-mat').value.trim(),
+        調理器具: '',
+        オーブン温度: '', 調理時間: num(document.getElementById('fm-min').value) || '',
+        冷凍可: '', 解凍要否: '',
+        日持ち冷蔵: '', 日持ちパーシャル: '', 日持ち冷凍: '',
+        共通グループ: '', 参考URL: '', 手順メモ: '',
+      }] });
+      menu = saved[0];
+    }
+
+    if (toReplace && toReplace.length) {
+      await api('remove', { sheet: 'plan', ids: toReplace.map(function (p) { return p['id']; }) });
+    }
+    await save('plan', [{ 日付: day, 食事区分: slot, member_id: '', menu_id: menu.id, 状態: '予定' }]);
+    toast('「' + name + '」を入れました');
   });
 }
 
@@ -914,8 +983,9 @@ function stageKey(months) {
 
 /**
  * アレルギー表示が義務づけられている原材料（特定原材料8品目）を含む食材。
- * 一度食べたきりで間があくと、次にあげるとき不安になりやすいので、
- * 「前回から何日たったか」という事実だけを出す。判断はしない。
+ *
+ * 「何日あけるべきか」はこのアプリでは判断しない。
+ * 初めて食べた日と、最後に食べた日を、事実として並べるだけにする。
  */
 const KEY_ALLERGENS = {
   '卵': '卵', '牛乳': '乳', 'プレーンヨーグルト': '乳', 'カッテージチーズ': '乳',
@@ -924,6 +994,29 @@ const KEY_ALLERGENS = {
   '中華めん': '小麦', '食パン': '小麦', 'ロールパン': '小麦', '麸': '小麦',
   'えび': 'えび', '桜えび': 'えび',
 };
+
+/**
+ * 離乳食の記録から、食材ごとの「初めて食べた日」と「最後に食べた日」を求める。
+ *
+ * 「予定」と「拒否」は食べていないので数えない。
+ * 記録を直したり消したりすれば、ここも自動で変わる（別に持たないため）。
+ */
+function babyFoodHistory() {
+  const out = {};
+  (state.data.baby_log || []).forEach(function (b) {
+    const amount = b['食べた量'];
+    if (amount === '予定' || amount === '拒否') return; // 実際には食べていない
+    const day = String(b['日付'] || '').slice(0, 10);
+    if (!day) return;
+    splitList(b['材料']).forEach(function (f) {
+      const rec = out[f] || (out[f] = { first: day, last: day, count: 0 });
+      if (day < rec.first) rec.first = day;
+      if (day > rec.last) rec.last = day;
+      rec.count++;
+    });
+  });
+  return out;
+}
 
 function renderBaby() {
   const d = state.data;
@@ -962,23 +1055,67 @@ function renderBaby() {
   h += '<p class="hint">押した時点でスプレッドシートに書き込まれます。あとでまとめて保存ではないので、'
     + '途中でアプリを閉じても消えません。</p>';
 
-  /* --- 間があいているもの（事実の提示だけ） --- */
-  const gaps = all.filter(function (f) {
-    return KEY_ALLERGENS[f['食材名']] && f['初めて食べた日'];
-  }).map(function (f) {
-    return { f: f, days: daysBetween(f['初めて食べた日'], today) };
-  }).sort(function (x, y) { return y.days - x.days; });
+  /* --- 市販ベビーフードのストック --- */
+  const bfs = d.stock.filter(function (s) { return s['種別'] === '市販BF'; });
+  const bfLeft = bfs.filter(function (s) { return num(s['残数']) > 0; });
 
-  if (gaps.length) {
-    h += '<h2 class="section">間があいているもの</h2>';
-    h += '<p class="hint">前回からの日数を出しているだけです。あけ方の判断はしていません。'
-      + '気になるときはかかりつけ医や健診で相談してください。</p>';
-    gaps.slice(0, 8).forEach(function (g) {
-      const long = g.days >= 14;
+  h += '<h2 class="section">市販ベビーフードのストック</h2>';
+  if (!bfLeft.length) {
+    h += '<div class="empty">まだありません。買ったものを足しておくと、残りがひと目で分かります。</div>';
+  } else {
+    bfLeft.sort(function (x, y) {
+      return String(x['期限'] || '9999').localeCompare(String(y['期限'] || '9999'));
+    }).forEach(function (s) {
+      const bits = [];
+      if (s['メモ']) bits.push(s['メモ']);
+      if (s['期限']) bits.push(shortDate(s['期限']) + 'まで');
+      const soon = s['期限'] && String(s['期限']).slice(0, 10) <= addDays(today, 14);
       h += '<div class="card"><div class="card-row"><div>'
-        + '<h3>' + esc(g.f['食材名']) + '</h3>'
-        + '<div class="meta">' + esc(KEY_ALLERGENS[g.f['食材名']]) + '・前回 ' + shortDate(g.f['初めて食べた日']) + '</div>'
-        + '</div><span class="badge ' + (long ? 'warn' : 'plain') + '">' + g.days + '日前</span></div></div>';
+        + '<h3>' + esc(s['名称']) + '</h3>'
+        + (bits.length ? '<div class="meta">' + esc(bits.join('・')) + '</div>' : '')
+        + '</div><span class="badge ' + (soon ? 'warn' : 'plain') + '">残り' + num(s['残数']) + '</span></div>'
+        + '<div class="btn-row">'
+        + '<button class="btn small primary" data-bfgive="' + s['id'] + '">これをあげた</button>'
+        + '<button class="btn small" data-bfedit="' + s['id'] + '">直す</button>'
+        + '</div></div>';
+    });
+  }
+  h += '<div class="btn-row"><button class="btn" id="bf-add">買ったものを足す</button></div>';
+
+  /* --- 食べた記録（初回と直近を、事実として並べるだけ） --- */
+  const hist = babyFoodHistory();
+  const tracked = all.filter(function (f) {
+    return KEY_ALLERGENS[f['食材名']] && (hist[f['食材名']] || f['初めて食べた日']);
+  }).sort(function (x, y) {
+    const hx = hist[x['食材名']], hy = hist[y['食材名']];
+    return String(hy ? hy.last : '').localeCompare(String(hx ? hx.last : ''));
+  });
+
+  if (tracked.length) {
+    h += '<h2 class="section">食べた記録（卵・乳・小麦・えび）</h2>';
+    h += '<p class="hint">初めて食べた日と、最後に食べた日を並べているだけです。'
+      + '何日あけるべきかの判断はしていません。'
+      + '気になるときは、かかりつけ医や健診で相談してください。</p>';
+    tracked.forEach(function (f) {
+      const name = f['食材名'];
+      const rec = hist[name];
+      let meta;
+      let right;
+      if (rec) {
+        meta = '初回 ' + shortDate(rec.first)
+          + '／直近 ' + shortDate(rec.last)
+          + '（' + rec.count + '回）';
+        // 未来の日付で記録されることがあるので、マイナス日数は出さない
+        const gap = daysBetween(rec.last, today);
+        right = '<span class="badge plain">' + (gap >= 0 ? '直近から' + gap + '日' : 'これから') + '</span>';
+      } else {
+        meta = '初回 ' + shortDate(f['初めて食べた日']) + '　その後の記録はありません';
+        right = '<span class="badge plain">初回のみ</span>';
+      }
+      h += '<div class="card"><div class="card-row"><div>'
+        + '<h3>' + esc(name) + '</h3>'
+        + '<div class="meta">' + esc(KEY_ALLERGENS[name]) + '・' + esc(meta) + '</div>'
+        + '</div>' + right + '</div></div>';
     });
   }
 
@@ -1019,8 +1156,11 @@ function renderBaby() {
     }
 
     if (done.length) {
+      const eatenNames = done.map(function (f) {
+        return f['食材名'] + (hist[f['食材名']] ? '' : '（初回のみ）');
+      });
       h += '<h2 class="section">食べたことがあるもの（' + done.length + '）</h2>';
-      h += '<div class="card"><div class="meta">' + esc(done.map(function (f) { return f['食材名']; }).join('、')) + '</div></div>';
+      h += '<div class="card"><div class="meta">' + esc(eatenNames.join('、')) + '</div></div>';
     }
   }
 
@@ -1053,6 +1193,16 @@ function renderBaby() {
     b.addEventListener('click', function () { recordFirstTry(b.dataset.firsttry); });
   });
   document.getElementById('baby-add').addEventListener('click', function () { editBabyLog(null); });
+  document.getElementById('bf-add').addEventListener('click', function () { editBabyFood(null); });
+  document.querySelectorAll('[data-bfedit]').forEach(function (b) {
+    b.addEventListener('click', function () { editBabyFood(b.dataset.bfedit); });
+  });
+  document.querySelectorAll('[data-bfgive]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const st = byId(state.data.stock, b.dataset.bfgive);
+      if (st) editBabyLog(null, { name: st['名称'], stockId: st['id'] });
+    });
+  });
   document.querySelectorAll('[data-babyedit]').forEach(function (b) {
     b.addEventListener('click', function () { editBabyLog(b.dataset.babyedit); });
   });
@@ -1062,8 +1212,9 @@ function renderBaby() {
  * 離乳食の記録を足す・直す。
  * 保存を押した時点でスプレッドシートに書き込む（端末に貯めておかない）。
  */
-function editBabyLog(id) {
+function editBabyLog(id, prefill) {
   const b = id ? (byId(state.data.baby_log, id) || {}) : {};
+  const from = prefill || {};
   const slots = ['朝', '昼', '夕', 'おやつ'];
   const amounts = ['予定', '拒否', '少し', '半分', '完食'];
   const moods = ['ごきげん', 'ふつう', 'ぐずり'];
@@ -1078,8 +1229,13 @@ function editBabyLog(id) {
     '<label class="field">いつ<input type="date" id="b-date" value="'
       + esc(String(b['日付'] || ymd(new Date())).slice(0, 10)) + '"></label>'
     + '<label class="field">食事</label>' + seg('slot', slots, b['食事区分'] || '昼')
-    + '<label class="field">メニュー<input type="text" id="b-menu" value="' + esc(b['メニュー名'] || '') + '" placeholder="10倍がゆ、にんじんペースト など"></label>'
-    + '<label class="field">はじめての食材（あれば）<input type="text" id="b-first" value="' + esc(b['はじめて食材'] || '') + '" list="b-foods"></label>'
+    + '<label class="field">メニュー<input type="text" id="b-menu" value="'
+      + esc(b['メニュー名'] || from.name || '') + '" placeholder="10倍がゆ、にんじんペースト など"></label>'
+    + (from.stockId ? '<p class="hint">保存すると、市販ベビーフードの残りが1つ減ります。</p>' : '')
+    + '<label class="field">食べた食材（複数なら「、」で区切る）<input type="text" id="b-foods-in" value="'
+      + esc(b['材料'] || '') + '" list="b-foods" placeholder="10倍がゆ、にんじん"></label>'
+    + '<p class="hint">ここに入れた食材から、初めて食べた日と最後に食べた日を数えます。'
+      + '「予定」と「拒否」は食べていないので数えません。</p>'
     + '<datalist id="b-foods">'
       + (state.data.baby_foods || []).map(function (f) { return '<option value="' + esc(f['食材名']) + '">'; }).join('')
       + '</datalist>'
@@ -1105,8 +1261,14 @@ function editBabyLog(id) {
   document.getElementById('b-save').addEventListener('click', async function () {
     const menu = document.getElementById('b-menu').value.trim();
     if (!menu) return toast('メニューを入れてください');
-    const first = document.getElementById('b-first').value.trim();
     const date = document.getElementById('b-date').value;
+    const foodsIn = document.getElementById('b-foods-in').value.trim();
+
+    // 「予定」と「拒否」は食べていないので、初めて食べた日には数えない
+    const ate = picked.amount !== '予定' && picked.amount !== '拒否';
+    const before = babyFoodHistory();
+    const firsts = ate ? splitList(foodsIn).filter(function (f) { return !before[f]; }) : [];
+
     closeSheet();
 
     const row = {
@@ -1115,8 +1277,8 @@ function editBabyLog(id) {
       食事区分: picked.slot,
       メニュー名: menu,
       参考URL: b['参考URL'] || '',
-      材料: b['材料'] || '',
-      はじめて食材: first,
+      材料: foodsIn,
+      はじめて食材: firsts.join('、'),
       食べた量: picked.amount,
       機嫌: picked.mood,
       メモ: document.getElementById('b-memo').value,
@@ -1126,16 +1288,28 @@ function editBabyLog(id) {
 
     await api('upsert', { sheet: 'baby_log', rows: [row] });
 
-    // はじめて食べた食材は、チェックリスト側にも日付を入れる
-    if (first) {
-      const f = byKey(state.data.baby_foods, '食材名', first);
+    // 初めて食べた食材は、103食材のチェックリスト側にも日付を入れる
+    const marks = [];
+    firsts.forEach(function (name) {
+      const f = byKey(state.data.baby_foods, '食材名', name);
       if (f && !f['初めて食べた日']) {
         f['初めて食べた日'] = date;
-        await api('upsert', { sheet: 'baby_foods', rows: [f] });
+        marks.push(f);
+      }
+    });
+    if (marks.length) await api('upsert', { sheet: 'baby_foods', rows: marks });
+
+    // 市販ベビーフードから記録したときは、実際に食べたぶんだけ残数を減らす
+    if (from.stockId && ate) {
+      const st = byId(state.data.stock, from.stockId);
+      if (st && num(st['残数']) > 0) {
+        st['残数'] = num(st['残数']) - 1;
+        await api('upsert', { sheet: 'stock', rows: [st] });
       }
     }
+
     await reload();
-    toast('記録しました');
+    toast(firsts.length ? '記録しました（はじめて：' + firsts.join('、') + '）' : '記録しました');
   });
 
   const del = document.getElementById('b-del');
@@ -1148,12 +1322,71 @@ function editBabyLog(id) {
   });
 }
 
+/**
+ * チェックリストから直接「はじめて食べた」を付ける。
+ * 食事の記録とは別なので、あとから見ると「初回のみ」と表示される。
+ * きちんと数えたいときは、離乳食の記録側に食べた食材を書いてもらう。
+ */
+/**
+ * 市販ベビーフードのストックを足す・直す。
+ * 在庫シートに 種別「市販BF」として入れ、取り置き先を赤ちゃんにするので
+ * 大人の「どうぞ」には出ない。
+ */
+function editBabyFood(id) {
+  const st = id ? (byId(state.data.stock, id) || {}) : {};
+  const baby = state.data.members.find(function (m) { return m['区分'] === '乳児'; }) || {};
+
+  openSheet(id ? '市販ベビーフードを直す' : '買ったものを足す',
+    '<label class="field">商品名<input type="text" id="bf-name" value="' + esc(st['名称'] || '')
+      + '" placeholder="○○の野菜スープ 7か月から など"></label>'
+    + '<label class="field">個数<input type="number" id="bf-qty" inputmode="numeric" min="0" value="'
+      + esc(String(num(st['残数']) || 1)) + '"></label>'
+    + '<label class="field">賞味期限（任意）<input type="date" id="bf-exp" value="'
+      + esc(String(st['期限'] || '').slice(0, 10)) + '"></label>'
+    + '<label class="field">メモ（月齢の表示など・任意）<input type="text" id="bf-memo" value="'
+      + esc(st['メモ'] || '') + '" placeholder="7か月から"></label>'
+    + '<div class="btn-row"><button class="btn primary" id="bf-save">保存</button>'
+      + (id ? '<button class="btn" id="bf-del">消す</button>' : '') + '</div>');
+
+  document.getElementById('bf-save').addEventListener('click', async function () {
+    const name = document.getElementById('bf-name').value.trim();
+    if (!name) return toast('商品名を入れてください');
+    closeSheet();
+    const row = {
+      id: id || '',
+      名称: name,
+      種別: '市販BF',
+      作った日: st['作った日'] || ymd(new Date()),
+      残数: num(document.getElementById('bf-qty').value),
+      保存場所: '常温',
+      期限: document.getElementById('bf-exp').value,
+      用途: '自由',
+      plan_id: '',
+      調理要否: 'そのまま食べられる',
+      取り置き先: baby.id || '',
+      メモ: document.getElementById('bf-memo').value,
+    };
+    if (!row.id) delete row.id;
+    await save('stock', [row]);
+    toast('保存しました');
+  });
+
+  const del = document.getElementById('bf-del');
+  if (del) del.addEventListener('click', async function () {
+    if (!confirm('この行を消します。よろしいですか？')) return;
+    closeSheet();
+    await api('remove', { sheet: 'stock', ids: [id] });
+    await reload();
+    toast('消しました');
+  });
+}
+
 async function recordFirstTry(name) {
   const f = byKey(state.data.baby_foods, '食材名', name);
   if (!f) return;
   f['初めて食べた日'] = ymd(new Date());
   await save('baby_foods', [f]);
-  toast(name + 'の「はじめて」を記録しました');
+  toast(name + 'に印を付けました');
 }
 
 /* ================================================================== */
@@ -1185,7 +1418,8 @@ function renderSettings() {
 
     h += '<h2 class="section">苦手な食材</h2>'
       + '<p class="hint">自分の分を入れてください。△は「少量なら食べられる」です。'
-      + '調理法によって変わるものは、メモに書いておくと提案に反映されます。</p>';
+      + '献立の提案に効くのは ○ △ × だけです。'
+      + 'メモは人が読むための覚え書きで、いまは提案には使われていません。</p>';
     const me = myMember();
     if (!me) {
       h += '<div class="empty">先に「わたしは誰か」を選んでください。</div>';
